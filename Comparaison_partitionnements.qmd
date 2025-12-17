@@ -1,0 +1,480 @@
+---
+title: "Comparaison_partitionnement"
+format: html
+editor: visual
+---
+
+# Introduction
+
+Ce document à pour objectif d'explorer les algorithmes de partitionnement et leurs paramètres, en particulier en terme de nombre de clusters.
+
+Nous allons nous concentrer sur l'approche de partitionnement flou autour des médioïdes, qui sélectionne un site comme communauté typique d'un groupe. Nous allons rajouter la classification du bruit par après.
+
+```{r}
+library(targets)
+library(tidyverse)
+library(vegan)
+library(vegclust)
+library(indicspecies)
+library(furrr)
+library(ggpubr)
+library(cluster)
+```
+
+# Importation des données
+
+Nous allons directement utiliserle jeu de données sauvegardé dans le pipeline d'analyse de données. Nous allons ensuite le transformer en matrice de distance de Hellinger.
+
+```{r}
+Commu <- targets::tar_read(Commu_scores)
+
+X <- Commu$D_large |> 
+  select(any_of(Commu$Codes_sp$sp.code))
+
+Hell <- vegdist(X, method = "hellinger")
+```
+
+# Critère d'évaluation
+
+Trois paramètres vont devoir ultimement être optimisés : le nombre de partitions, l'exposant de flou et la distance au groupe représentant le bruit.
+
+Nous allons employer quatre critères d'évaluation des partitions (Ken, Roberts et Weaver, 2008, JVS ; Schmidtein et al., 2010, JVS).
+
+-   Quantité des espèces indicatrices : un indicateur non géométrique, indiquant la spécificité et la fidélité des espèces aux groupes, calculées comme le nombre d'espèces indicatrices à *p \<= 0.05* (Ken, Roberts et Weaver, 2008, JVS).
+
+-   Quantité et qualité des espèces indicatrices : un indicateur non géométrique, indiquant la spécificité et la fidélité des espèces aux groupes, calculées comme le nombre d'espèces indicatrices à *p \<= 0.05* multipliées par le logarithm négatif de leur *p* médiane (Schmidtein et al., 2010, JVS).
+
+-   Suivent deux indicateurs développés pour les partitions flous :
+
+    -   Le coefficient normalisé de partition (PCN) : à maximiser.
+
+    -   L'entropie normalisée de partition (PEN) : à minimiser.
+
+Nous allons donc créer une fonction pour calculer ces évaluateurs. Pour le calcul des espèces indicatrices, chaque espèce ne peut être indicatrice que d'un seul groupe. Cela semble faire du sens, étant donné que le but est de définir des associations. De plus, le temps de calcul devient rapidements excessivement long si l'on considère que les espèces peuvent indiquer des combinaisons de sites.
+
+```{r}
+evaluer_partition <- function(pars, part, Commu){
+  # Calculer les évaluateurs de partitionnement flou
+  ind_fuzzy <- vegclustIndex(part)
+  
+  # Déflouter la matrice
+  groupes <- defuzzify(part, method = "cut", alpha = 0.5)$cluster
+  
+  # Garder uniquement les observations non floues
+  groupes.full <- groupes[-which(is.na(groupes))]
+  Commu.full <- Commu[-which(is.na(groupes)),]
+  
+  # Caculer les valeurs indicatrices
+  indval <- multipatt(Commu.full, groupes.full,
+                      duleg = T, max.order = 1,
+                      control = how(nperm=5000))
+  
+  # Calculer l'évaluateur basé sur les valeurs indicatrices
+  indval_stat = indval$sign |> 
+    filter(complete.cases(p.value), p.value <= 0.05) |>
+    summarise(med.isa.p = -log(median(p.value)),
+              n.isa.sign = n(),
+              isa.eval = med.isa.p * n.isa.sign)
+  
+  # Rassembler les informations
+  Eval <- data.frame(k = pars$k, m = pars$m, dnoise = pars$dnoise,
+                     PCN = as.numeric(ind_fuzzy["PCN"]), 
+                     PEN = as.numeric(ind_fuzzy["PEN"]),
+                     med.isa.p = indval_stat$med.isa.p, 
+                     n.isa.sign = indval_stat$n.isa.sign, 
+                     isa.eval = indval_stat$isa.eval)
+  
+  return(Eval)
+}
+```
+
+Et nous allons tester la fonction.
+
+```{r}
+data(wetland)
+
+dist.hell <- vegdist(wetland, "hellinger")
+
+pars <- data.frame(k = 3, m = 1.2, dnoise = NA)
+part <- vegclustdist(dist.hell,
+                      mobileMemb = pars$k,
+                      m = pars$m,
+                      method = "FCMdd")
+
+evaluer_partition(pars = pars, part, wetland)
+```
+
+# Partionnement flou autour des médioïdes
+
+Nous allons employer la fonction \`vegclustdist\` pour obtenir le partitionnement.
+
+Ici, nous allons réaliser une boucle à travers :
+
+-   Différents nombres de groupes (entre 10 et 30, pour ratisser large mais limiter l'apparition de trop petits groupes).
+
+-   Différentes valeurs d'exposant de flou (*m*). À *m = 1*, le partitionnement est égal à un partitionnement sans flou. Un premier essai nous a montré qu'il était inutile d'aller vers des valeurs plus hautes que 1.3 : sinon aucun groupe ne peut être assigné aux observations. Nous allons nous limiter à deux valeurs de m, sinon le temps de calcul est extrêmement long. Des premiers résultats nous ont montré que le nombre d'espèces indicatrices est très faible avec des valeurs de m \> 1.1.
+
+```{r}
+# Utiliser plusieurs coeurs
+plan(multisession, workers = 4)
+
+k <- 10:30
+m <- c(1.05, 1.1)
+dnoise = NA
+
+Pars <- expand.grid(k, m, dnoise)
+colnames(Pars) <- c("k", "m", "dnoise")
+
+npars <- 1:nrow(Pars)
+
+Eval <- npars |> 
+  future_map(.options = furrr_options(seed = T),
+    \(x){
+      # Réaliser la partition
+      part <- vegclustdist(Hell,
+                           mobileMemb = Pars$k[x],
+                           m = Pars$m[x],
+                           method = "FCMdd")
+      
+      Eval <- evaluer_partition(pars = Pars[x,], part = part, Commu = X)
+      return(Eval)
+    }
+  ) |> 
+  list_rbind()
+```
+
+Observons maintenant le graphique des résultats:
+
+```{r}
+p1 <- Eval |> 
+  mutate(m = as.character(m)) |> 
+  ggplot(aes(x = k)) + 
+  geom_point(aes(y = PCN, color = m)) + 
+  geom_line(aes(y = PCN, color = m)) + 
+  ylab("Normalized partition coefficient (PCN)") + 
+  theme_minimal()
+
+p2 <- Eval |> 
+  mutate(m = as.character(m)) |> 
+  ggplot(aes(x = k)) + 
+  geom_point(aes(y = PEN, color = m)) + 
+  geom_line(aes(y = PEN, color = m)) + 
+  ylab("Normalized partition entropy (PEN)") + 
+  theme_minimal()
+
+p3 <- Eval |> 
+  mutate(m = as.character(m)) |> 
+  ggplot(aes(x = k)) + 
+  geom_point(aes(y = n.isa.sign, color = m)) + 
+  geom_line(aes(y =  n.isa.sign, color = m)) + 
+  ylab("Number of indicator species (P<0.05)") + 
+  theme_minimal()
+
+p4 <- Eval |> 
+  mutate(m = as.character(m)) |> 
+  ggplot(aes(x = k)) + 
+  geom_point(aes(y = isa.eval, color = m)) + 
+  geom_line(aes(y =  isa.eval, color = m)) + 
+  ylab("Indice of quantity and quality of indicatore species") + 
+  theme_minimal()
+
+ggarrange(p1, p2, p3, p4, nrow = 2, ncol = 2, common.legend = T)
+```
+
+```         
+plot(tw, main = "Numeric Label")
+```
+
+Cette approche ne me convient pas :
+
+-   Le résultat des évaluations change à chaque run
+
+-   Les résultats sont trop sensibles aux valeurs de paramètres (m, dnoise).
+
+Nous allons donc nous concentrer sur un premier essai de partitionnement, puis naviguer dans les possibilités sur la base de notre expertise.
+
+# Comparaison de PAM et béta flexible
+
+## Béta flexible
+
+D'abord, réalisons le partitionnement avec la méthode de béta flexible. (<https://www.davidzeleny.net/anadat-r/doku.php/en:hier-agglom_examples>)
+
+```{r}
+cluster.flexible <- agnes(x = Hell, method = "flexible", par.method = 0.625)
+cluster.flexible.hclust <- as.hclust (cluster.flexible)
+plot (cluster.flexible.hclust)
+```
+
+Maintenant, observons le résultat sur notre NMDS.
+
+```{r}
+Commu$D_large <- bind_cols(Commu$D_large,
+                           data.frame(clust.beta = cutree(cluster.flexible.hclust, k = 4)))
+
+## Calcul des médioïdes
+Commu$D_large <- Commu$D_large |> 
+  group_by(clust.beta) |> 
+  mutate(across(starts_with("NMDS"), median, .names = "beta_med_{.col}")) |> 
+  ungroup()
+
+p_beta_12 <- Commu$D_large |> 
+  ggplot(aes(x = NMDS1, y = NMDS2)) + 
+  geom_segment(aes(xend = beta_med_NMDS1, yend = beta_med_NMDS2), alpha = 0.5) + 
+  geom_point() #+ 
+  #geom_text(aes(x = beta_med_NMDS1, y = beta_med_NMDS2, label = clust.beta),
+            #color = "red", size = 4)
+
+p_beta_34 <- Commu$D_large |> 
+  ggplot(aes(x = NMDS3, y = NMDS4)) + 
+  geom_segment(aes(xend = beta_med_NMDS3, yend = beta_med_NMDS4), alpha = 0.5) + 
+  geom_point() #+ 
+  #geom_text(aes(x = beta_med_NMDS3, y = beta_med_NMDS4, label = clust.beta),
+            #color = "red", size = 4)
+```
+
+## PAM
+
+```{r}
+  # Partitionnement
+  PAM <- pam(Hell, k = 4, diss = T,
+             metric = "euclidean",
+             medoids = "random", nstart = 100,
+             )
+Commu$D_large$clust.pam <- PAM$clustering
+```
+
+```{r}
+## Calcul des médioïdes
+Commu$D_large <- Commu$D_large |> 
+  group_by(clust.pam) |> 
+  mutate(across(starts_with("NMDS"), median, .names = "pam_med_{.col}")) |> 
+  ungroup()
+
+p_pam_12 <- Commu$D_large |> 
+  ggplot(aes(x = NMDS1, y = NMDS2)) + 
+  geom_segment(aes(xend = pam_med_NMDS1, yend = pam_med_NMDS2), alpha = 0.5) + 
+  geom_point() #+ 
+  #geom_text(aes(x = pam_med_NMDS1, y = pam_med_NMDS2, label = clust.pam),
+            #color = "red", size = 4)
+
+p_pam_34 <- Commu$D_large |> 
+  ggplot(aes(x = NMDS3, y = NMDS4)) + 
+  geom_segment(aes(xend = pam_med_NMDS3, yend = pam_med_NMDS4), alpha = 0.5) + 
+  geom_point() #+ 
+  #geom_text(aes(x = pam_med_NMDS3, y = pam_med_NMDS4, label = clust.pam),
+            #color = "red", size = 4)
+```
+
+```{r}
+table(Commu$D_large$clust.beta, Commu$D_large$clust.pam)
+```
+
+```{r}
+ggarrange(p_beta_12, p_beta_34, p_pam_12, p_pam_34,
+          nrow = 2, ncol = 2, legend = "none")
+```
+
+# Approche basée sur l'expertise
+
+## Relations avec l'environnement
+
+Pour commencer, nous allons observer le lien entre la disposition des sites dans la NMDS et deux variables environnementales clés : le drainage et l'altitude.
+
+Voici d'abord les résultats pour le drainage.
+
+```{r}
+Commu <- tar_read(Commu_clust)
+
+p_drain_12 <- Commu$D_large |> 
+  mutate(drain.ver.class = case_match(
+    drain.ver.id,
+    "1" ~ "1",
+    "2" ~ "2-3",
+    "3" ~ "2-3",
+    "4" ~ "4-5",
+    "5" ~ "4-5",
+    "6" ~ "6",
+    "16" ~ "16"
+  )) |> 
+  ggplot(aes(x = NMDS1, y = NMDS2)) +
+  geom_point(aes(color = drain.ver.class), size = 2) +
+  #scale_shape_manual(values = c(1,3)) + 
+  theme_minimal()
+
+p_drain_34 <- Commu$D_large |> 
+  mutate(drain.ver.class = case_match(
+    drain.ver.id,
+    "1" ~ "1",
+    "2" ~ "2-3",
+    "3" ~ "2-3",
+    "4" ~ "4-5",
+    "5" ~ "4-5",
+    "6" ~ "6",
+    "16" ~ "16"
+  )) |> 
+  ggplot(aes(x = NMDS3, y = NMDS4)) +
+  geom_point(aes(color = drain.ver.class), size = 2) +
+  #scale_shape_manual(values = c(1,3)) + 
+  theme_minimal()
+
+ggarrange(p_drain_12, p_drain_34, common.legend = T)
+```
+
+Et maintenant les graphiques pour l'altitude.
+
+```{r}
+p_alti_12 <- Commu$D_large  |> 
+  ggplot(aes(x = NMDS1, y = NMDS2)) +
+  geom_point(aes(color = alti.mnemr), size = 2) +
+  scale_color_viridis_c() + 
+  theme_minimal()
+
+p_alti_34 <- Commu$D_large |> 
+  ggplot(aes(x = NMDS3, y = NMDS4)) +
+  geom_point(aes(color = alti.mnemr), size = 2) +
+  scale_color_viridis_c() + 
+  theme_minimal()
+
+ggarrange(p_alti_12, p_alti_34, common.legend = T)
+```
+
+## Partitionnement
+
+Nous pouvons maintenant explorer la disposition des groupes dans l'espace réduit.
+
+```{r}
+
+Commu$D_large <-Commu$D_large |> 
+  mutate(cluster.color = case_when(
+    cluster_pam %in% 1:5 ~ "1-5",
+    cluster_pam %in% 6:10 ~ "6-10",
+    cluster_pam %in% 11:15 ~ "11-15",
+    cluster_pam %in% 16:20 ~ "16-20",
+    cluster_pam %in% 20:25 ~ "20-25",
+    ),
+    cluster.shape = case_when(
+    cluster_pam %in% c(1,6,11,16,21) ~ "1",
+    cluster_pam %in% c(2,7,12,17,22) ~ "2",
+    cluster_pam %in% c(3,8,13,18,23) ~ "3",
+    cluster_pam %in% c(4,9,14,19,24) ~ "4",
+    cluster_pam %in% c(5,10,15,20,25) ~ "5",
+    ),
+    cluster_pam = as.character(cluster_pam),
+    cluster.color = factor(cluster.color,
+                           levels = c("1-5", "6-10", "11-15", "16-20", "20-25")))
+
+p_cluster_12 <- Commu$D_large |> 
+  ggplot(aes(x = NMDS1, y = NMDS2)) +
+  #geom_point(data = select(Commu$D_large, -cluster.color), alpha = 0.5, size = 2) +
+  geom_point(aes(color = as.character(cluster_pam)), size = 2) +
+  theme_minimal()
+
+p_cluster_34 <- Commu$D_large |> 
+  ggplot(aes(x = NMDS3, y = NMDS4)) +
+  #geom_point(data = select(Commu$D_large, -cluster.color), alpha = 0.5, size = 2) +
+  geom_point(aes(color = as.character(cluster_pam)), size = 2) +
+  theme_minimal()
+
+p_cluster_19 <- ggarrange(p_cluster_12, p_cluster_34, common.legend = T)
+ggsave("Explorations/plot_NMDS_pam_19.pdf", p_cluster_17, height = 4, width = 8)
+```
+
+### Espèces indicatrices
+
+Nous allons créer un tableau diagonalisé permettant d'observer la composition des différents groupes.
+
+```{r}
+Sp_indic <- tar_read(Sp_indic)
+PAM <- tar_read(PAM)
+Commu$D_large |> 
+  select(campagne, parcelle, cluster_pam) |> 
+  slice(PAM$medoids)
+```
+
+```{r}
+summary(Sp_indic)
+```
+
+Nous allons maintenant créer les tableaux permettant de décrire les groupes de végétation en terme de composition en espèces.
+
+```{r}
+Table_groupes <- Commu$D_large |> 
+  select(parcelle, cluster_pam, 
+         any_of(Commu$Codes_sp$sp.code)) |> pivot_longer(-cluster_pam:-parcelle,,names_to = "sp.code", values_to = "couvert") |> 
+  group_by(cluster_pam) |> 
+  mutate(n.parc = length(unique(parcelle))) |> 
+  filter(couvert > 0) |> 
+  group_by(cluster_pam, sp.code) |> 
+  summarise(occ = length(unique(parcelle)),
+            n.parc = unique(n.parc),
+            occ.pourc = occ/n.parc*100,
+            couvert.med = median(couvert),
+            couvert.min = min(couvert),
+            couvert.max = max(couvert)) |> 
+  mutate(occ.class = case_when(
+    occ.pourc < 20 ~ "I",
+    occ.pourc >= 20 & occ.pourc < 40 ~ "II",
+    occ.pourc >= 40 & occ.pourc < 60 ~ "III",
+    occ.pourc >= 60 & occ.pourc < 80 ~ "IV",
+    occ.pourc >= 80 ~ "V"
+  ),
+  couvert = paste0(couvert.med, " (", couvert.min, "-", 
+                   couvert.max, ")")) |> 
+  left_join(Commu$Codes_sp |> select(sp.code, sp.nom, forme.croissance, sous.regne))
+```
+
+Sauvegardons maintenant les tableaux sous forme de csv.
+
+```{r}
+Table_groupes |> 
+  ungroup() |> 
+  select(cluster_pam, sous.regne, forme.croissance, sp.nom, occ.class, couvert, occ.pourc) |> 
+  openxlsx2::write_xlsx(file = "Explorations/Table_groupes_19.xlsx",
+                        col_names = T)
+```
+
+### Formes de croissance
+
+```{r}
+
+Table_groupes_formes <- Commu$D_large |> 
+  select(cluster_pam, parcelle, `Arbuste erige`:`Hepatique a thalle`) |> 
+  pivot_longer(-parcelle:-cluster_pam,
+               values_to = "couvert",
+               names_to = "forme.croissance") |> 
+  group_by(cluster_pam) |> 
+  mutate(n.parc = length(unique(parcelle))) |> 
+  group_by(cluster_pam, forme.croissance) |> 
+  reframe(occ = sum(ifelse(couvert > 0, 1, 0)),
+          n.parc = unique(n.parc),
+          occ.pourc = occ/n.parc*100,
+          couvert.med = median(couvert),
+          couvert.min = min(couvert),
+          couvert.max = max(couvert)) |> 
+  mutate(occ.class = case_when(
+    occ.pourc < 20 ~ "I",
+    occ.pourc >= 20 & occ.pourc < 40 ~ "II",
+    occ.pourc >= 40 & occ.pourc < 60 ~ "III",
+    occ.pourc >= 60 & occ.pourc < 80 ~ "IV",
+    occ.pourc >= 80 ~ "V"
+  ),
+  couvert = paste0(couvert.med, " (", couvert.min, "-", 
+                   couvert.max, ")")) |> 
+  relocate(cluster_pam, forme.croissance, occ.class, couvert)
+
+openxlsx2::write_xlsx(Table_groupes_formes, 
+                      file = "Explorations/Table_groupes_formes_19.xlsx",
+                        col_names = T)
+```
+
+```{r}
+Commu$D_large |> 
+  select(cluster_pam, parcelle, `Arbuste erige`:`Hepatique a thalle`) |> 
+  pivot_longer(-parcelle:-cluster_pam,
+               values_to = "couvert",
+               names_to = "forme.croissance") |> 
+  mutate(cluster_pam = as.character(cluster_pam)) |> 
+  filter(forme.croissance %in% c("Arbuste erige", "Arbuste nain", "Arbuste prostre")) |> 
+  ggplot(aes(x = cluster_pam, y = couvert)) + 
+  geom_boxplot(aes(fill = forme.croissance))
+```

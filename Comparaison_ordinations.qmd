@@ -1,0 +1,641 @@
+---
+title: "Comparaison des méthodes d'ordination"
+format: html
+editor: visual
+---
+
+# Introduction
+
+Le but de ce document est de sélectionner la méthode d'ordination la plus appropriée à l'analyse des communautés végétales du domaine de la toundra à arbustes dressés, au Nunavik.
+
+Nous allons utiliser les librairies suivantes :
+
+```{r}
+library(VegetationNunavik.data) # Pour importer les données
+library(tidyverse) # Pour manipuler les données
+library(vegan) # Pour réaliser les ordinations
+library(purrr) # Pour remplacer les boucles
+library(ggpubr) # Pour arranger plusieurs graphiques ensemble
+```
+
+## Importation des données
+
+Nous allons tout d'abord préparer le jeu de données d'abondances. Ceci se fait en trois étapes :
+
+1.  Retirer les taxons non identifiés et préparer un jeu de données au format long
+
+2.  Calculer la richesse en espèce
+
+3.  Retirer les sites avec une seule espèce
+
+4.  Extraire les codes des espèces retenues
+
+5.  Pivoter la matrice de communauté au format large, en retirant les espèces n'aparaissant qu'une fois.
+
+6.  Extraire uniquement la matrice numérique des abondances, sans les descripteurs de parcelle.
+
+```{r}
+ ## Importer les données d'abondance
+  D_long <- Inventaires_Abondances_Tad |>
+    filter(epithete != "sp." & 
+             complete.cases(famille) & 
+             famille != "NA") |>  # Retirer les espèces non identifiées
+    group_by(parcelle) |> 
+    mutate(richesse = length(unique(sp.nom))) |> 
+    ungroup() |> 
+    filter(richesse > 1)
+ ## Stocker les noms d'espèces
+  codes_sp <- unique(D_long$sp.code)
+  
+  ## Pivoter la matrice de communauté
+  D_large <- D_long |> 
+    pivot_matrice_communaute(seuil = 2, # Retirer les espèces dont occurence = 1
+                             seuil_type = "occurence", 
+                             matrice = "Abondance", valeur = "Pourc")
+  
+  ## Extraire la matrice sans descripteur des parcelles
+  X <- D_large |> 
+    select(any_of(codes_sp))
+```
+
+# Exploration des distances
+
+Nous allons tout d'abord explorer la distribution des distances entre les sites, pour mieux comprendre le jeu de données. Cette étape est importante, car comme le disent Legendre & Legendre (1998), les analyses subséquentes vont exploiter les informations contenues dans la matrice de distance, et non pas dans les données brutes.
+
+## Comparaison des coefficients
+
+Toutes les mesures de distance ne sont pas appropriées à des analyses multivariées. Selon Legendre & De Caceres (2013), Deux groupes de coefficients sont appropriés, identifiés comme types II et III.
+
+Le type II contient les distance de Chord et de Hellinger, qui sont invariants aux abondances totales et produisent des distances euclidiennes avec ou sans transformation par racine carrée. Ils ne corrigent pas pour le sous-échantillonnage. À noter que leur valeur maximale est $\sqrt{2}$, soit environ 1.41.
+
+Le type III contiennent le coefficient de divergence, la métrique ce Canberra, l'indice d'asssociation de Whittaker, la distance de Bray-Curtis et les dissimilarités de Wishart et Kulczynski. Seul l'indice d'association de Whittaker est invariant aux abondances totales. Ils ne corrigent pas pour les abondances totales, et ne sont Euclidiens qu'après une trasnformation par racine carrée.
+
+Nous allons donc dans un premier temps comparer les distances de Hellinger, transformées ou brutes et la racine carrée de la distance de Bray-Curtis, avec (standardisée) et sans transformation en abondance relative. La valeur maximale de la racine carée de la distance de Hellinger est maintenant de \$\\sqrt{\\sqrt{2}}\$, soit 1.19 environ.
+
+```{r}
+## Distance de Hellinger
+Hell <- vegdist(X, method = "hell")
+## Distance de Hellinger transformée
+Hellt <- vegdist(X, method = "hell") |> sqrt()
+## Distance de Bray-Curtis, sans standardisation
+Bray <- vegdist(X, method = "bray") |> sqrt()
+## Distance de Bray-Curtis, avec standardisation
+Brays <- decostand(X, method = "total", MARGIN = 1) |> 
+  vegdist(method = "bray") |> sqrt()
+
+## Graphiques des distances entre elles
+plot(Hellt, Bray); abline(0,1); abline(v = sqrt(sqrt(2))); abline(h = 1)
+plot(Hellt, Brays); abline(0,1); abline(v = sqrt(sqrt(2))); abline(h = 1)
+plot(Bray, Brays); abline(0,1); abline(v = 1); abline(h = 1)
+```
+
+Nous pouvons voir que :
+
+-   La distance de Bray-Curtis sature plus rapidement que la distance de Hellinger. Des distances de Bray de 1 correspondent à des distances entre 1.1 et 1.4 de distances de Hellinger. Ces distances saturées sont certainement dues à des abondances élevées, dont l'importance est réduite dans le cas des distances de Hellinger, qui sont calculées avec la racine carrée des abondances.
+
+-   Les distances de Hellinger et de Bray standardisées sont fortement corrélées, sans patron de déviation évident.
+
+-   Les distances de Bray saturent plus rapidement que les distance de Bray standardisées. À des valeurs de 1 de distances de Bray-Curtis correspondent des valeurs entre 0.9 et 1 de distance de Bray standardisée.
+
+Observons maintenant l'histogramme des différentes distances.
+
+```{r}
+hist(Hell)
+hist(Hellt)
+hist(Bray)
+hist(Brays)
+```
+
+Nous pouvons voir que toutes les distances ont tendance à saturer, avec le plus grand nombre de points se trouvant proche de la limite supérieure de distance. Toutefois, il est évident que les distance de Hellinger saturent moins rapidement, avec un histogramme moins abrupt dans les hautes valeurs. Pour la suite, nous allons retenir uniquement les distance de Hellinger.
+
+## Connectivité de la matrice de distance
+
+Dans des cas de haute diversité \beta, des sites peuvent se retrouver déconnectés. Dans ce cas, ces sites ne ressemblent à aucun autre, et ne peuvent être positionnés adéquatement dans des ordinations ni classifiés correctement par des analyses de partitionnement.
+
+La première chose que j'essaye est d'observer la distribution des distance minimales pour chaque site. Cela va nous demander de remplacer artificiellement les 0 de la diagonale pour la valeur maximale, sinon ils seront retournés comme valeur minimale.
+
+```{r}
+# Transformation en matrice et remplacement des valeurs diagonales
+Hell_m <- as.matrix(Hell)
+diag(Hell_m) <- sqrt(2)
+# Extraction de la valeur minimale de distance par colonne
+Hell_min <- apply(Hell_m, MARGIN = 2, FUN = min)
+
+hist(Hell_min)
+
+# Transformation en matrice et remplacement des valeurs diagonales
+Hellt_m <- as.matrix(Hellt)
+diag(Hellt_m) <- sqrt(sqrt(2))
+# Extraction de la valeur minimale de distance par colonne
+Hellt_min <- apply(Hellt_m, MARGIN = 2, FUN = min)
+
+hist(Hellt_min)
+
+# Transformation en matrice et remplacement des valeurs diagonales
+Bray_m <- as.matrix(Bray)
+diag(Bray_m) <- 1
+# Extraction de la valeur minimale de distance par colonne
+Bray_min <- apply(Bray_m, MARGIN = 2, FUN = min)
+
+hist(Bray_min)
+
+# Transformation en matrice et remplacement des valeurs diagonales
+Brays_m <- as.matrix(Brays)
+diag(Brays_m) <- 1
+# Extraction de la valeur minimale de distance par colonne
+Brays_min <- apply(Brays_m, MARGIN = 2, FUN = min)
+
+hist(Brays_min)
+```
+
+Nous pouvons voir que quelques sites ont des distance minimales aux autres sites assez élevées, mais qu'ils s'agit d'une minorité. Comparé à la distance maximale, le mode a tendance à être plus élevé avec les mesures de Bray-Curtis.
+
+Sur la base de la saturation des distances, je vais garder la mesure de Hellinger pour le reste de l'exploration.
+
+La fonction \`disconnected\` permet de retourner les groupes qui sont séparées par des distances minimales spécifiées.
+
+```{r}
+disco <- distconnected(Hell, toolong = 1.1)
+```
+
+La grande majorité des sites (333 sur 361) sont connectés par des distance plus faibles que 1.1. Le reste des sites sont essentiellement déconnectés, à l'exception du groupe 13, qui rassemble 8 sites connectés mais séparés des autres par des distances supérieures à 1.1.
+
+Comment trouver la distance optimale au delà de laquelle un site doit-être considéré déconnecté et retiré du jeu de données avant analyse? Je propose dans un premier temps d'écrire une fonction qui nous retournera le nombre de membres des deux groupes les plus populeux pour différentes valeurs de distance minimales.
+
+```{r}
+nbre_disco <- function(Dis, toolong){
+  disco <- distconnected(Dis, toolong = toolong, trace = F)
+  disco_table <- sort(table(disco), decreasing = T)
+  
+  Res <- data.frame(toolong = toolong, 
+                    n_gr1 = disco_table[1], n_gr2 = disco_table[2])
+  return(Res)
+}
+```
+
+Utilisons maintenant cette fonction pour des valeurs croissantes de distance maximale tolérable avant déconnection.
+
+```{r}
+toolong_seq <- seq(from = 0.8, to = 1.4, by = 0.025)
+
+toolong_df <- toolong_seq |> 
+  map(.f = \(x) nbre_disco(Hell, x)) |> 
+  list_rbind()
+
+toolong_df |> ggplot(aes(x = toolong, y = n_gr1)) +
+  geom_point() + 
+  geom_line()
+toolong_df |> ggplot(aes(x = toolong, y = n_gr2)) +
+  geom_point() + 
+  geom_line()
+```
+
+Il semble y avoir une inflexion à 1.125 à partir de laquelle la perte de site est minimale. Seule l'ordination nous dira si c'est acceptable!
+
+# Analyse des coordonnées principales (PCoA)
+
+## Matrice complète
+
+En premier lieu, nous allons réaliser une PCoA sur l'ensemble de la matrice de distance.
+
+```{r}
+PCoA <- cmdscale(Hell, k = 3, eig = T)
+```
+
+Observons en le graphique de Shephard, qui compare les distances observées aux distances produites par la PCoA.
+
+```{r}
+Dist_PCoA <- dist(PCoA$points)  
+plot(Hell, Dist_PCoA); abline(0,1) 
+lm(Dist_PCoA ~ Hell) |> summary()
+```
+
+La réduction en trois dimensions a très mal préservé les distances originales.
+
+Observons la variance expliquée par les 20 premiers axes.
+
+```{r}
+Variance <- data.frame(eig = PCoA$eig, 
+                       sum_eig = sum(PCoA$eig),
+                       nbre_axe = 1:length(PCoA$eig)) |> 
+  mutate(pourc_var = eig/sum_eig*100,
+         cum_var = cumsum(pourc_var))
+
+Variance |> ggplot(aes(x = nbre_axe, y = pourc_var)) + 
+  geom_point() + 
+  geom_segment(aes(x = nbre_axe, xend = nbre_axe,
+                   y = 0, yend = pourc_var)) +
+  xlim(0,20)
+```
+
+Et la somme cumulative des variances expliquées.
+
+```{r}
+Variance |> 
+  ggplot(aes(x = nbre_axe, y = cum_var)) + 
+  geom_point() + 
+  geom_segment(aes(x = nbre_axe, xend = nbre_axe,
+                   y = 0, yend = cum_var)) +
+  xlim(0,20) + 
+  ylim(0,55)
+```
+
+En premier lieu, nous allons extraire les indicateurs de groupes déconnectés et les coller à notre jeu de données en format large.
+
+Et finalement la distribution des sites dans la PCoA!
+
+```{r}
+Scores_PCoA <- scores(PCoA, tidy = T)
+
+p_PCoA_12 <- Scores_PCoA |> 
+  ggplot(aes(x = Dim1, y = Dim2)) + 
+  geom_point(alpha = 0.5)
+p_PCoA_13 <- Scores_PCoA |> 
+  ggplot(aes(x = Dim1, y = Dim3)) + 
+  geom_point(alpha = 0.5)
+
+ggarrange(p_PCoA_12, p_PCoA_13)
+```
+
+Nous pouvons observer une forme d'éventail, avec de nombreux points très denses à droite, et un vaste étalage des points en allant vers les valeurs négatives du premier axe. L'axe trois étale un petit peu ces valeurs verticalement, mais il y a encore un nuage assez dense.
+
+```{r}
+# Extraire l'indice des groupes connectés à 1.125
+disco_125 <- distconnected(Hell, toolong = 1.125) |> 
+  data.frame(disco_125 = _)
+# Coller ces indices de groupes au tableau format large
+D_large_125 <- bind_cols(D_large, disco_125)
+```
+
+Nous allons ensuite garder uniquement le groupe 1 (348 sites) et recalculer la matrice de distance. Nous devons repartir du jeu de données en format long afin de retirer les espèces qui n'apparaitraient qu'une seule fois après la sélection des sites.
+
+```{r}
+# Extraire les noms de parcelles à garder
+parcelles_a_garder <- D_large_125 |> 
+  filter(disco_125 == 1) |> 
+  pull(parcelle)
+
+  # Pivoter la matrice de communauté
+  D_large_125 <- D_long |> 
+    filter(parcelle %in% parcelles_a_garder) |> 
+    pivot_matrice_communaute(seuil = 2, # Retirer les espèces dont occurence = 1
+                             seuil_type = "occurence", 
+                             matrice = "Abondance", valeur = "Pourc")
+  
+  # Extraire la matrice sans descripteur des parcelles
+  X_125 <- D_large_125 |> 
+    select(any_of(codes_sp))
+  
+# Dimension des jeux de données avant et après sélection
+  dim(X); dim(X_125)
+
+# Calcul de la matrice de distance
+Hell_125 <- vegdist(X_125, method = "hell")
+```
+
+En sélectionnant la distance de déconnection de 1.125, 13 sites et 15 espèces ont été retirées du jeu de données.
+
+Il est maintenant temps de calculer la PCoA, nombre premier essai d'ordination.
+
+```{r}
+PCoA_125 <- cmdscale(Hell_125, k = 3, eig = T)
+```
+
+Observons en premier lieu de graphique de Shephard, qui compare les distances observées aux distances produites par la PCoA.
+
+```{r}
+Dist_PCoA_125 <- dist(PCoA_125$points)  
+plot(Hell_125, Dist_PCoA_125); abline(0,1) 
+lm(Dist_PCoA_125 ~ Hell_125) |> summary()
+```
+
+Les distances observées sont plutôt moyennement capturées par les trois premiers axes...
+
+Observons la distribution des variances expliquées par les 20 premiers axes.
+
+```{r}
+Variance_125 <- data.frame(eig = PCoA_125$eig, 
+                       sum_eig = sum(PCoA_125$eig),
+                       nbre_axe = 1:length(PCoA_125$eig)) |> 
+  mutate(pourc_var = eig/sum_eig*100,
+         cum_var = cumsum(pourc_var))
+
+Variance_125 |> ggplot(aes(x = nbre_axe, y = pourc_var)) + 
+  geom_point() + 
+  geom_segment(aes(x = nbre_axe, xend = nbre_axe,
+                   y = 0, yend = pourc_var)) +
+  xlim(0,20)
+```
+
+Et la somme cumulative de la variance expliquée. En noir, les variances expliquées par le modèle complet.
+
+```{r}
+Variance_125 |> 
+  ggplot(aes(x = nbre_axe, y = cum_var)) + 
+  geom_point(color = "red") + 
+  geom_segment(aes(x = nbre_axe, xend = nbre_axe,
+                   y = 0, yend = cum_var), color = "red") +
+  geom_point(data = Variance) + 
+  geom_segment(data = Variance, aes(x = nbre_axe, xend = nbre_axe,
+                   y = 0, yend = cum_var)) +
+  xlim(0,20) + 
+  ylim(0,55)
+```
+
+Il est maintenant temps d'observer la distribution des sites dans la PCoA!
+
+```{r}
+Scores_PCoA_125 <- scores(PCoA_125, tidy = T)
+
+p_PCoA_125_12 <- Scores_PCoA_125 |> 
+  ggplot(aes(x = Dim1, y = Dim2)) + 
+  geom_point(alpha = 0.5)
+p_PCoA_125_13 <- Scores_PCoA_125 |> 
+  ggplot(aes(x = Dim1, y = Dim3)) + 
+  geom_point(alpha = 0.5)
+
+ggarrange(p_PCoA_12, p_PCoA_13, p_PCoA_125_12, p_PCoA_125_13,
+          nrow = 2, ncol = 2)
+```
+
+C'est raisonnablement satisfaisant, mais j'ai peur que le tas de site dans les valeurs positives de l'axe 1 ne limite nos analyses subséquentes.
+
+Je vais recommencer avec une valeur de distance de déconnection légèrement plus faible, ce qui va créer un groupe de 8 sites connectés ensemble mais déconnectés du reste de la base de données.
+
+```{r}
+# Extraire l'indice des groupes connectés à 1.125
+disco_100 <- distconnected(Hell, toolong = 1.100) |> 
+  data.frame(disco_100 = _)
+# Coller ces indices de groupes au tableau format large
+D_large_100 <- bind_cols(D_large, disco_100)
+```
+
+```{r}
+# Extraire les noms de parcelles à garder
+parcelles_a_garder_100 <- D_large_100 |> 
+  filter(disco_100 == 1) |> 
+  pull(parcelle)
+
+  # Pivoter la matrice de communauté
+  D_large_100 <- D_long |> 
+    filter(parcelle %in% parcelles_a_garder_100) |> 
+    pivot_matrice_communaute(seuil = 2, # Retirer les espèces dont occurence = 1
+                             seuil_type = "occurence", 
+                             matrice = "Abondance", valeur = "Pourc")
+  
+  # Extraire la matrice sans descripteur des parcelles
+  X_100 <- D_large_100 |> 
+    select(any_of(codes_sp))
+  
+# Dimension des jeux de données avant et après sélection
+  dim(X); dim(X_125); dim(X_100)
+
+# Calcul de la matrice de distance
+Hell_100 <- vegdist(X_100, method = "hell")
+```
+
+Par rapport au jeu de données original, 26 sites et 25 espèces ont été retirés. Par rapport au jeu de donnés filtré avec une distance de déconnection de 1.125, 14 sites et 10 espèces ont été retirés.
+
+Calculons maintenant la PCoA avec ce nouveau tri.
+
+```{r}
+PCoA_100 <- cmdscale(Hell_100, k = 3, eig = T)
+```
+
+Observons en premier lieu de graphique de Shephard, qui compare les distances observées aux distances produites par la PCoA.
+
+```{r}
+Dist_PCoA_100 <- dist(PCoA_100$points)
+
+plot(Hell_100, Dist_PCoA_100); abline(0,1)
+lm(Dist_PCoA_100 ~ Hell_100) |> summary()
+```
+
+Les distances observées sont plutôt moyennement capturées par les trois premiers axes...
+
+Observons la distribution des variances expliquées par les 20 premiers axes. En rouge, la variance expliquée avec le premier seuil de déconnection
+
+```{r}
+Variance_100 <- data.frame(eig = PCoA_100$eig, 
+                       sum_eig = sum(PCoA_100$eig),
+                       nbre_axe = 1:length(PCoA_100$eig)) |> 
+  mutate(pourc_var = eig/sum_eig*100,
+         cum_var = cumsum(pourc_var))
+
+Variance_100 |> ggplot(aes(x = nbre_axe, y = pourc_var)) + 
+  geom_point(color = "blue") + 
+  geom_segment(aes(x = nbre_axe, xend = nbre_axe,
+                   y = 0, yend = pourc_var), color = "blue") +
+  geom_point(data = Variance_125, color = "red") + 
+  geom_segment(data = Variance_125, color = "red",
+               aes(x = nbre_axe, xend = nbre_axe,
+                   y = 0, yend = pourc_var)) +
+  geom_point(data = Variance) + 
+  geom_segment(data = Variance,
+               aes(x = nbre_axe, xend = nbre_axe,
+                   y = 0, yend = pourc_var)) +
+  xlim(0,20)
+```
+
+La variance expliquée par les premiers axes est très légèrement supérieur avec un seuil de déconnection plus stricte. Observons maintenant le cumul de variance expliquée.
+
+```{r}
+Variance_100 |> 
+  ggplot(aes(x = nbre_axe, y = cum_var)) + 
+  geom_point(color = "blue") + 
+  geom_segment(aes(x = nbre_axe, xend = nbre_axe,
+                   y = 0, yend = cum_var), color = "blue") +
+  geom_point(data = Variance_125, color = "red") + 
+  geom_segment(data = Variance_125, color = "red",
+               aes(x = nbre_axe, xend = nbre_axe,
+                   y = 0, yend = cum_var)) +
+  geom_point(data = Variance) + 
+  geom_segment(data = Variance, aes(x = nbre_axe, xend = nbre_axe,
+                   y = 0, yend = cum_var)) +
+  xlim(0,20) + 
+  ylim(0,55)
+```
+
+Et maintenant la distribution des sites dans la PCoA!
+
+```{r}
+Scores_PCoA_100 <- scores(PCoA_100, tidy = T)
+
+p_PCoA_100_12 <- Scores_PCoA_100 |> 
+  ggplot(aes(x = Dim1, y = Dim2)) + 
+  geom_point(alpha = 0.5)
+p_PCoA_100_13 <- Scores_PCoA_100 |> 
+  ggplot(aes(x = Dim1, y = Dim3)) + 
+  geom_point(alpha = 0.5)
+
+ggarrange(p_PCoA_12, p_PCoA_13,
+          p_PCoA_125_12, p_PCoA_125_13,
+          p_PCoA_100_12, p_PCoA_100_13,
+          nrow = 3, ncol = 2)
+```
+
+La différence est subtile, à discuter...
+
+# Positionnement multidimensionnel non métrique (NMDS)
+
+Essayons maintenant d'estimer une NMDS en se basant sur ces dissimilarité triées. Voici quelques informations sur les options :
+
+-   Le stress est minimisé à l'aide d'un modèle global avec une régression monotonique.
+
+-   La fonction va optimiser un stress de type 1, qui permet une relation non linéaire des distances.
+
+-   Nous tentons de représenter les distances dans un espace en quatre dimensions. Avec moins de dimension, le stress dépasse 0.2, indiquant une mauvaise représentation des distances.
+
+-   Nous utilisons un traitement fort (secondaire) des liens, le modèle ayant pour objectif de représenter des distances de Hellinger équivalentes par des distances euclidiennes équivalentes. Si nous permettons un traitement faible, l'ajustement est totalement dominé par les sites les plus différents, qui deviennent très éloignés de la masse des sites, qui paraissent alors tous similaires. Ici, la distance euclidienne des sites les plus uniques pourraient être sous-estimé, mais nous nous assurons de produire des gradients interprétables.
+
+-   Nous désactivons la transformation automatique du jeu de données, car la distance de Hellinger est déjà calculée sur la racine carrée des abondances.
+
+-   Nous ne permettons pas de recalcule des distances en cas d'espèces non partagées
+
+-   Nous allons chercher une solution en testant un mimimum de 100 départs aléatoires (max 500), pour éviter de se retrouver coincé dans un minimum local.
+
+```{r}
+set.seed(999)
+NMDS <- metaMDS(comm = X,
+                distance = "hell", 
+                k = 4, 
+                model = "global",
+                stress = 1,
+                weakties = F,
+                autotransform = F,
+                noshare = F,
+                try = 100, trymax = 500,
+                wascores = T, expand = T,
+                scaling = T, pc = T, 
+                parallel = 4,
+                smin = 1e-4, sfgrmin = 1e-7, sratmax=0.999999)
+```
+
+Le stress atteint est correct, ce n'est pas une représentation parfaite mais c'est plus faible que 0.20.
+
+```{r}
+NMDS$stress
+stressplot(NMDS)
+```
+
+Tel qu'attendu, les distances maximales sont moins bien représentées que les distances intermédiaires, mais nous nous attendons à ce que cela nous permette de mieux interpréter les gradients structurant la végétation.
+
+Observons maintenant la distribution des sites dans l'espace à quatre dimensions.
+
+```{r}
+Scores_NMDS <- scores(NMDS, tidy = T)
+
+Scores_NMDS_sites <- Scores_NMDS |> 
+  filter(score == "sites")
+
+p_NMDS_12 <- Scores_NMDS_sites |> 
+  ggplot(aes(x = NMDS1, y = NMDS2)) + 
+  geom_point(alpha = 0.5)
+p_NMDS_34 <- Scores_NMDS_sites |> 
+  ggplot(aes(x = NMDS3, y = NMDS4)) + 
+  geom_point(alpha = 0.5)
+
+ggarrange(p_NMDS_12, p_NMDS_34)
+```
+
+Comme pour la PCoA, les points sont plus concentrés dans les valeurs élevées de l'axe 1, mais nous n'observons pas d'amas indifférenciable. Pas mal du tout!
+
+Essayons maintenant avec la version qui sépare les sites connectés par une distance minimale de 1.100.
+
+```{r}
+set.seed(999)
+NMDS_100 <- metaMDS(comm = X_100,
+                distance = "hell", 
+                k = 4, 
+                model = "global",
+                stress = 1,
+                weakties = F,
+                autotransform = F,
+                noshare = F,
+                try = 100, trymax = 500,
+                wascores = T, expand = T,
+                scaling = T, pc = T, 
+                parallel = 4,
+                smin = 1e-4, sfgrmin = 1e-7, sratmax=0.999999)
+```
+
+```{r}
+NMDS_100$stress
+stressplot(NMDS_100)
+```
+
+Le stress est tout à fait similaire à la solution avec tous les points de données (0.163 vs. 0.169).
+
+Observons la distribution des points.
+
+```{r}
+Scores_NMDS_100 <- scores(NMDS_100, tidy = T)
+
+Scores_NMDS_100_sites <- Scores_NMDS_100 |> 
+  filter(score == "sites")
+
+p_NMDS_100_12 <- Scores_NMDS_100_sites |> 
+  ggplot(aes(x = NMDS1, y = NMDS2)) + 
+  geom_point(alpha = 0.5)
+p_NMDS_100_34 <- Scores_NMDS_100_sites |> 
+  ggplot(aes(x = NMDS3, y = NMDS4)) + 
+  geom_point(alpha = 0.5)
+
+ggarrange(p_NMDS_12, p_NMDS_34,
+          p_NMDS_100_12, p_NMDS_100_34)
+```
+
+Les solutions sont extrêmement similaires. Je pense que nous pouvons avancer maintenant avec le jeu de données complet (à l'exception des sites avec une seule espèce), et une NMDS globale avec traitement fort des liens.
+
+Posons nous maintenant la question du nombre d'axes sur lesquels positionner nos sites. Nous allons explorer en force brute avec une séquence de 2 à 10 axes.
+
+```{r, eval = F}
+set.seed(999)
+NMDS_K <- 2:10 |> 
+  set_names() |> 
+  map(.f = \(x)
+    metaMDS(comm = X,
+                distance = "hell", 
+                k = x, 
+                model = "global",
+                stress = 1,
+                weakties = F,
+                autotransform = F,
+                noshare = F,
+                try = 100, trymax = 500,
+                wascores = T, expand = T,
+                scaling = T, pc = T, 
+                parallel = 6,
+                smin = 1e-4, 
+                sfgrmin = 1e-7, sratmax=0.999999)
+  )
+
+saveRDS(NMDS_K, "Explorations/NMDS_k.rda")
+```
+
+Observons la diminution du stress avec le nombre d'axes.
+
+```{r}
+NMDS_k <- readRDS("Explorations/NMDS_k.rda")
+
+k_stress <- 1:9 |> 
+  map(\(x) data.frame(k = x+1, 
+                      stress = NMDS_k[[x]]$stress)) |> 
+  list_rbind()
+
+k_stress |> 
+  ggplot(aes(x = k, y = stress)) + 
+  geom_point() + 
+  #geom_line() + 
+  geom_segment(aes(yend = 0, xend = k))
+
+diff(k_stress$stress)
+```
+
+Je propose de rester avec quatre axes, il y a peu de gain à aller vers 5 axes (passer d'un stress de 0.17 à un stress de 0.14).
+
+```{r}
+DCA <- decorana(X)
+summary(DCA)
+plot(DCA, choices = c(1,2), display = "sites")
+```

@@ -1,0 +1,776 @@
+---
+title: "Classification par béta flexible"
+format: html
+editor: visual
+---
+
+# Introduction
+
+Après avoir tenté de descendre la hiérarchie créée par la classification des communautés végétales par l'algorithme béta flexible (\$\\beta = -0.25\$), nous avons décidé de changer d'approche. La descente des embranchements demandait en effet de passer beaucoup de temps à décrire et comprendre des divisions qui n'étaient pas vraiment intelligibles, car trop grossière.
+
+Nous allons tenter la nouvelle approche suivante : tenter la description direct de types de végétation opérationnels, structuré par le contexte de la hiérarchie. En gros, nous allons tenter de définir les groupes les plus pertinents en sélectionnant des branches de dendrogrammes, qui seront contextualisés par l'exploration des groupes adjacents.
+
+```{r}
+# Importer les librairies
+library(tidyverse)
+library(targets)
+library(tinytable)
+library(ggpubr)
+library(qgraph)
+library(dendextend)
+tar_source()
+
+# Importer les données
+Commu <- tar_read(Commu_bflex)
+Beta_flex <- tar_read(Beta_flex)
+```
+
+Observons le dendrogramme.
+
+```{r}
+plot(as.hclust(Beta_flex))
+```
+
+# 1. Communautés cryoturbées à Salix herbacea - Gymnocolea inflata subsp. inflata/Polytrichum juniperinum
+
+En partant de la gauche, nous pouvons observer un premier groupe attractif, qui se sépare à une hauteur d'environ 1.2 et ne se rassemble avec un autre groupe qu'à une hauteur d'environ 1.9. Il s'agit du groupe 1, en rouge dans la figure.
+
+```{r}
+groupes <- cutree(Beta_flex, h = 1.5)
+
+plot(as.hclust(Beta_flex), labels = groupes)
+rect.hclust(as.hclust(Beta_flex), h = 1.5,
+            border = c("red", rep("black", length(unique(groupes)) - 1))
+            )
+```
+
+```{r}
+table(groupes)
+```
+
+Le groupe 1 rassemble 6 parcelles, tandis que le groupe 15 en rassemble 10.
+
+## NMDS
+
+```{r}
+Commu$D_large$groupes <- groupes
+
+p_NMDS_12 <- Commu$D_large |> 
+  group_by(groupes) |> 
+  mutate(across(starts_with("NMDS"), median, .names = "med.{.col}.pam")) |> 
+  ggplot(aes(x = NMDS1, y = NMDS2)) + 
+  geom_segment(aes(xend = med.NMDS1.pam, yend = med.NMDS2.pam), alpha = 0.5) + 
+  geom_point(aes(color = drain.class.1), alpha = 0.5, size = 2) + 
+  geom_label(aes(x = med.NMDS1.pam, y = med.NMDS2.pam,
+                 label = groupes),
+             size = 3) + 
+  theme_minimal()
+
+p_NMDS_34 <- Commu$D_large |> 
+  group_by(groupes) |> 
+  mutate(across(starts_with("NMDS"), median, .names = "med.{.col}.pam")) |> 
+  ggplot(aes(x = NMDS3, y = NMDS4)) + 
+  geom_segment(aes(xend = med.NMDS3.pam, yend = med.NMDS4.pam), alpha = 0.5) + 
+  geom_point(aes(color = drain.class.1), alpha = 0.5, size = 2) + 
+  geom_label(aes(x = med.NMDS3.pam, y = med.NMDS4.pam, label = groupes),
+             size = 3) + 
+  theme_minimal()
+
+ggarrange(p_NMDS_12, p_NMDS_34, common.legend = T)
+```
+
+Le groupe 1 se trouve au centre de l'axe 1, qui représente essentiellement un gradient de drainage. Il est proche du groupe 15 sur les axes 1, 2 et 3, mais éloigné du groupe 15 sur l'axe 4.
+
+## Formes de croissance
+
+Nous allons observer la fréquence et l'abondance médianne des formes de croissance, et comparer ces valeurs avec celles du groupe adjacent (groupe 15).
+
+```{r}
+Table_forme_croissance <- table_formes_croissance(Commu, "groupes")
+
+p_freq <- Table_forme_croissance |> 
+  filter(groupes %in% c(1, 15)) |> 
+  ggplot(aes(x = forme.croissance, y = occ.pourc, 
+             color = as.character(groupes))) + 
+  geom_point(position = position_dodge(0.5), size = 2) + 
+  geom_segment(aes(yend = 0), 
+               position = position_dodge(0.5), linewidth = 1.5) + 
+  theme_minimal() + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+
+p_abund <- Table_forme_croissance |> 
+  filter(groupes %in% c(1, 15)) |> 
+  ggplot(aes(x = forme.croissance, y = couvert.med, 
+             color = as.character(groupes))) + 
+  geom_point(position = position_dodge(0.5), size = 2) + 
+  geom_segment(aes(yend = 0), 
+               position = position_dodge(0.5), linewidth = 1.5) + 
+  theme_minimal() + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+
+ggarrange(p_freq, p_abund, common.legend = T)
+```
+
+```{r}
+Table_forme_croissance |> 
+  filter(groupes == 1) |> 
+  select(forme.croissance, occ.class, couvert) |> 
+  arrange(forme.croissance) |> 
+  tt() |> 
+  group_tt(
+    i = list(
+      "Plantes vasculaires" = 1,
+      "Bryophytes" = 8,
+      "Lichens" = 12
+    )
+  ) |> 
+  style_tt(i = "groupi", align = "c", line = "b")
+```
+
+Le groupe 1 est caractérisé par une présence constante de graminoïdes, de bryophytes s.s. et d'hépatiques à feuilles. Les arbustes prostrés et les lichens fruticuleux sont présents dans les 3/4 des parcelles, tandis que les arbustes érigés, les arbustes nains et les lichens crustacés sont présents dans la moitié des parcelles.
+
+Le groupe 1 se démarque surtout par un couvert médian très élevé des hépatiques à feuilles. Tous les autres groupes fonctionnels ont un faible couvert médian.
+
+## Espèces caractéristiques
+
+```{r}
+Table_sp <- table_sp(Commu, "groupes")
+
+Table_sp |> 
+  filter(groupes == "1", occ.class != "I") |> 
+  arrange(sous.regne, desc(occ.pourc)) |> 
+  select(sp.nom, occ.class, couvert) |> 
+  tt() |> 
+  setNames(c("Espèce", "Occurence", "Couvert")) |> 
+  group_tt(
+    i = list(
+      "Plantes vasculaires" = 1,
+      "Bryophytes" = 6,
+      "Lichens" = 10
+    )
+  ) |> 
+  style_tt(i = "groupi", align = "c", line = "b") |> 
+  style_tt(fontsize = 1, line = NULL)
+```
+
+Avec la liste des espèces de rang I.
+
+```{r}
+Table_sp <- table_sp(Commu, "groupes")
+
+Table_sp |> 
+  filter(groupes == "1", occ.class == "I") |> 
+  arrange(sous.regne, desc(occ.pourc)) |> 
+  select(sp.nom, occ.class, couvert) |> 
+  tt() |> 
+  setNames(c("Espèce", "Occurence", "Couvert")) |>  
+  group_tt(
+    i = list(
+      "Plantes vasculaires" = 1,
+      "Bryophytes" = 7,
+      "Lichens" = 16
+    )
+  ) |> 
+  style_tt(i = "groupi", align = "c", line = "b") |> 
+  style_tt(fontsize = 1, line = NULL)
+```
+
+## Environnement
+
+```{r}
+Commu$D_large |> 
+  filter(groupes %in% c(1,15)) |> 
+  group_by(groupes) |> 
+  summarise(across(c(pente, alti.mnemr), .fns = 
+                     ~paste0(
+                       round(median(.x)),
+                       " (", round(min(.x)), ";", 
+                       round(max(.x)), ")"
+                     )
+                     )
+            )
+```
+
+Les pentes et les altitudes semblent similaires entre les groupes, mais le groupe 15 a été inventorié dans des pentes maximales plus élevées.
+
+```{r}
+Table_enviro <- table_enviro(Commu, "groupes")
+
+Table_enviro |> 
+  filter(groupes %in% c(1,15)) |> 
+  arrange(Variable) |> 
+  tt() |> 
+  style_tt(fontsize = 1, line = NULL) |>
+  theme_revealjs()
+```
+
+Les deux groupes se trouvent majoritairement sur des dépôts glaciaires.
+
+Les drainages médiques dominent, mais le groupe 15 se trouve parfois dans des drainages plus secs.
+
+Les deux types de végétation se trouvent tout deux sur des mors, au meilleur de notre connaissance.
+
+## Photos
+
+Nous allons rassembler les photos dans des dossiers dédiés. Voici le nom des parcelles du groupe 1, toutes inventoriées durant la campagne de la baie d'Hudson.
+
+```{r}
+Commu$D_large |> 
+  filter(groupes == 1) |> 
+  group_by(campagne, parcelle) |> 
+  summarise()
+```
+
+# 2. Communautés cryoturbées à Vaccinium uliginosum/Empetrum nigrum subsp. hermaphroditum - Anthelia juratzkana
+
+En partant de la gauche, un deuxième groupe se dégage assez distinctement, qui se rassemble avec le groupe 1 à une hauteur d'environ 1.9 et ne se resépare qu'à une hauteur d'environ 1.2.
+
+```{r}
+groupes <- cutree(Beta_flex, h = 1.5)
+
+plot(as.hclust(Beta_flex), labels = groupes)
+rect.hclust(as.hclust(Beta_flex), h = 1.5,
+            border = c("black", "red", rep("black", length(unique(groupes)) - 2))
+            )
+```
+
+Ce groupe (15) rassemble 10 parcelles.
+
+```{r}
+table(groupes)
+```
+
+## NMDS
+
+```{r}
+Commu$D_large$groupes <- groupes
+
+p_NMDS_12 <- Commu$D_large |> 
+  group_by(groupes) |> 
+  mutate(across(starts_with("NMDS"), median, .names = "med.{.col}.pam")) |> 
+  ggplot(aes(x = NMDS1, y = NMDS2)) + 
+  geom_segment(aes(xend = med.NMDS1.pam, yend = med.NMDS2.pam), alpha = 0.5) + 
+  geom_point(aes(color = drain.class.1), alpha = 0.5, size = 2) + 
+  geom_label(aes(x = med.NMDS1.pam, y = med.NMDS2.pam,
+                 label = groupes),
+             size = 3) + 
+  theme_minimal()
+
+p_NMDS_34 <- Commu$D_large |> 
+  group_by(groupes) |> 
+  mutate(across(starts_with("NMDS"), median, .names = "med.{.col}.pam")) |> 
+  ggplot(aes(x = NMDS3, y = NMDS4)) + 
+  geom_segment(aes(xend = med.NMDS3.pam, yend = med.NMDS4.pam), alpha = 0.5) + 
+  geom_point(aes(color = drain.class.1), alpha = 0.5, size = 2) + 
+  geom_label(aes(x = med.NMDS3.pam, y = med.NMDS4.pam, label = groupes),
+             size = 3) + 
+  theme_minimal()
+
+ggarrange(p_NMDS_12, p_NMDS_34, common.legend = T)
+```
+
+Ce groupe se trouve proche du centre de l'axe 1, avec une valeur légèrement plus élevée que le groupe 1 (vers le sec). Il se toruve au centre de l'axe à des valeurs élevées de l'axe 3 (plus hautes que le groupe 1) et au centre de l'axe 4 (plus basses que le groupe 1).
+
+## Formes de croissance
+
+```{r}
+Table_forme_croissance <- table_formes_croissance(Commu, "groupes")
+
+Table_forme_croissance |> 
+  filter(groupes == 15) |> 
+  select(forme.croissance, occ.class, couvert) |> 
+  arrange(forme.croissance) |> 
+  tt() |> 
+  group_tt(
+    i = list(
+      "Plantes vasculaires" = 1,
+      "Bryophytes" = 8,
+      "Lichens" = 12
+    )
+  ) |> 
+  style_tt(i = "groupi", align = "c", line = "b")
+```
+
+Les bryophytes au sens strict, les hépatiques à feuilles et les arbustes prostrés sont presque toujours présents. Les couverts sont généralement faibles, aucun couvert maximum ne dépassant 37.5 %. Ceci démarque beaucoup ce groupe du groupe 1, dans lequel les hépatiques à feuilles avaient un couvert médiant au dessus de 60%! Les arbustes prostrés ont aussi un couvert plus important que dans le groupe 1.
+
+## Espèces caractéristiques
+
+```{r}
+Table_sp <- table_sp(Commu, "groupes")
+
+Table_sp |> 
+  filter(groupes == "15", occ.class != "I") |> 
+  arrange(sous.regne, desc(occ.pourc)) |> 
+  select(sp.nom, occ.class, couvert) |> 
+  tt() |> 
+  setNames(c("Espèce", "Occurence", "Couvert")) |> 
+  group_tt(
+    i = list(
+      "Plantes vasculaires" = 1,
+      "Bryophytes" = 17,
+      "Lichens" = 24
+    )
+  ) |> 
+  style_tt(i = "groupi", align = "c", line = "b") |> 
+  style_tt(fontsize = 1, line = NULL)
+```
+
+Plusieurs choses sautent immédiatement au yeux :
+
+-   La diversité des plantes vasculaires fréquentes est plus grande dans ce groupe;
+
+-   L'hépatique à feuille constante change pour [*Anthelia juratzkana*](https://societequebecoisedebryologie.org/hepatiques/Anthelia_juratzkana.html)([photo](https://media01.symbiota.org/media/bryophytes/TENN/TENN-B-0089/TENN-B-0089403_b_lg.jpg)), mais avec un moindre couvert que *G. inflata* supsb. *inflata* dans le groupe 1.
+
+-   Les espèces de plantes vasculaires les plus fréquentes sont des plantes communes : *V. uliginosum* et *E. nigrum* subsp. *hermaphroditum*.
+
+## Environnement
+
+```{r}
+Commu$D_large |> 
+  filter(groupes %in% c(1,15)) |> 
+  group_by(groupes) |> 
+  summarise(across(c(pente, alti.mnemr), .fns = 
+                     ~paste0(
+                       round(median(.x)),
+                       " (", round(min(.x)), ";", 
+                       round(max(.x)), ")"
+                     )
+                     )
+            )
+```
+
+Le groupe se trouve à une diversité d'altitudes et sur des pentes plates à modérées.
+
+```{r}
+Table_enviro <- table_enviro(Commu, "groupes")
+
+Table_enviro |> 
+  filter(groupes %in% c(1,15)) |> 
+  arrange(Variable) |> 
+  tt() |> 
+  style_tt(fontsize = 1, line = NULL)
+```
+
+Les deux groupes se trouvent majoritairement sur des dépôts glaciaires.
+
+Les drainages médiques dominent, mais le groupe 15 se trouve parfois dans des drainages plus secs.
+
+Les deux types de végétation se trouvent tout deux sur des mors, au meilleur de notre connaissance.
+
+## Photos
+
+Ce groupe rassemble des parcelles de la baie d'Hudson et de la Rivière Arnaud. Selon les photos, ces communautés peuvent couvrir plus de surface que celles du groupe 1, avec par exemple des bandes parallèles à une rivière (Baie d'Hudson - ) et des champs de cercle de tri (Baie d'Hudson - A152A)
+
+```{r}
+Commu$D_large |> 
+  filter(groupes == 15) |> 
+  group_by(campagne, parcelle) |> 
+  summarise() |> 
+  tt()
+```
+
+# 3.
+
+En continuant de gauche à droite, un troisième groupe se dégage. Toutefois, je ne suis pas certain du niveau auquel couper. Un groupe se sépare autour d'une hauteur de 1.5, puis se resépare autour de 1.4. Le groupe suivant se resépare autour d'une hauteur de 1.2, ce qui le fait apparaître comme assez homogène, mais peut-être que ces deux groupes devront être assembler?
+
+```{r}
+groupes <- cutree(Beta_flex, h = 1.5)
+
+plot(as.hclust(Beta_flex), labels = groupes)
+rect.hclust(as.hclust(Beta_flex), h = 1.5,
+            border = c(rep("black", 2), 
+                       "red", 
+                       rep("black", length(unique(groupes)) - 3))
+            )
+```
+
+Le groupe 5 formé en coupant à une hauteur de 1.5 rassemble 14 parcelles. Si on coupait à une hauteur de 1.7, rassemblant les groupes 5 et 9, cela donnerait un groupe rassemblant 21 parcelles. Restons à 14 pour le moment.
+
+```{r}
+table(groupes)
+```
+
+## NMDS
+
+```{r}
+Commu$D_large$groupes <- groupes
+
+p_NMDS_12 <- Commu$D_large |> 
+  group_by(groupes) |> 
+  mutate(across(starts_with("NMDS"), median, .names = "med.{.col}.pam")) |> 
+  ggplot(aes(x = NMDS1, y = NMDS2)) + 
+  geom_segment(aes(xend = med.NMDS1.pam, yend = med.NMDS2.pam), alpha = 0.5) + 
+  geom_point(aes(color = drain.class.1), alpha = 0.5, size = 2) + 
+  geom_label(aes(x = med.NMDS1.pam, y = med.NMDS2.pam,
+                 label = groupes),
+             size = 3) + 
+  theme_minimal()
+
+p_NMDS_34 <- Commu$D_large |> 
+  group_by(groupes) |> 
+  mutate(across(starts_with("NMDS"), median, .names = "med.{.col}.pam")) |> 
+  ggplot(aes(x = NMDS3, y = NMDS4)) + 
+  geom_segment(aes(xend = med.NMDS3.pam, yend = med.NMDS4.pam), alpha = 0.5) + 
+  geom_point(aes(color = drain.class.1), alpha = 0.5, size = 2) + 
+  geom_label(aes(x = med.NMDS3.pam, y = med.NMDS4.pam, label = groupes),
+             size = 3) + 
+  theme_minimal()
+
+ggarrange(p_NMDS_12, p_NMDS_34, common.legend = T)
+```
+
+Le groupe 5 se trouve à proximativement au centre de l'axe 1, tandis que le groupe 9 se trouve dans des valeurs plus positives (caché par le groupe 42). Les deux se trouvent dans la moitié inférieure de l'axe 2. Les groupes 5 et 9 sont très proches sur les axes 3 et 4, dans les valeurs hautes de ces deux axes.
+
+## Forme de croissance
+
+```{r}
+Table_forme_croissance <- table_formes_croissance(Commu, "groupes")
+
+Table_forme_croissance |> 
+  filter(groupes == 5) |> 
+  select(forme.croissance, occ.class, couvert) |> 
+  arrange(forme.croissance) |> 
+  tt() |> 
+  group_tt(
+    i = list(
+      "Plantes vasculaires" = 1,
+      "Bryophytes" = 8,
+      "Lichens" = 12
+    )
+  ) |> 
+  style_tt(i = "groupi", align = "c", line = "b")
+```
+
+Ce groupe est dominé par les arbustes prostrés, qui sont à la fois constants et avec un couvert médian au dessus de 50 %. Les bryophytes s.s. sont aussi constants, avec un couvert variable. Les lichens fruticuleux sont très fréquent mais avec un couvert relativement faible. Les graminoïdes et les arbustes nains sont assez fréquents, avec un faible couvert médian mais un couvert maximum élevé.
+
+## Espèces caractéristiques
+
+```{r}
+Table_sp <- table_sp(Commu, "groupes")
+
+Table_sp |> 
+  filter(groupes == "5", occ.class != "I") |> 
+  arrange(sous.regne, desc(occ.pourc)) |> 
+  select(sp.nom, occ.class, couvert) |> 
+  tt() |> 
+  setNames(c("Espèce", "Occurence", "Couvert")) |> 
+  group_tt(
+    i = list(
+      "Plantes vasculaires" = 1,
+      "Bryophytes" = 14,
+      "Lichens" = 17
+    )
+  ) |> 
+  style_tt(i = "groupi", align = "c", line = "b") |> 
+  style_tt(fontsize = 1, line = NULL)
+```
+
+Le couvert de plantes vasculaires est évidemment dominé par Salix herbacea. Il est fréquemment accompagné par deux autres espèces chionophiles au couvert variable mais potentiellement élevé : Phyllodoce caerulea et Harrimanella hypnoide.
+
+Aucune espèce de bryophyte ne se démarque particulièrement pour ce groupe-ci.
+
+Une espèce de lichen crustacé est fréquente, tout en ayant un faible couvert :
+
+-   *Ochrolechia frigida* : au sol, sur les mousses, l'humus, les plantes en décomposition et plus rarement sur le bois mort; espèce de la forêt boréale ouverte et de la toundra arctique.
+
+Une espèce de lichen fruticuleux est fréquent, avec un faible couvert :
+
+-   *Cetrariella delisei* : au sol, principalement dans les dépressions humides et les combes à neige; espèce de la forêt boréal fermée, de la forêt boréale ouverte et de la toundra arctique et alpine.
+
+J'ai comme l'impression que le groupe pourrait-être subdivisé encore, nous allons voir ça avec les photos...
+
+## Environnement
+
+```{r}
+Commu$D_large |> 
+  filter(groupes %in% c(5,9)) |> 
+  group_by(groupes) |> 
+  summarise(across(c(pente, alti.mnemr), .fns = 
+                     ~paste0(
+                       round(median(.x)),
+                       " (", round(min(.x)), ";", 
+                       round(max(.x)), ")"
+                     )
+                     )
+            )
+```
+
+Pour les deux groupes proches, la pente va de nulle à assez forte, avec une altitude médiane assez élevée.
+
+```{r}
+Table_enviro <- table_enviro(Commu, "groupes")
+
+Table_enviro |> 
+  filter(groupes %in% c(5,9)) |> 
+  arrange(Variable) |> 
+  tt() |> 
+  style_tt(fontsize = 1, line = NULL)
+```
+
+Les dépôts glaciaires dominent le groupe 5, suivis par les dépôts littoraux. Les dépôts glaciaires sont moins importants dans le groupe 9, laissant de la place aux dépôts alluvionaires et aux dépôts fluvioglaciaires.
+
+Le drainage dominant des deux groupes est mésique.
+
+Les expositions dominantes sont Nord, Est et Nord-Est.
+
+Les deux groupes se trouvent sur des mors.
+
+Les situations à mi-pente et en bas de pente dominent les deux groupes, le groupe 5 étant potentiellement plus fréquemment en bas de pente que le groupe 9.
+
+## Photos
+
+Ce groupe rassemble essentiellement des parcelles de la baie d'Hudson, deux parcelles de la Rivière Arnaud et une parcelle proche de Kuujjuaq.
+
+```{r}
+Commu$D_large |> 
+  filter(groupes == 5) |> 
+  group_by(campagne, parcelle) |> 
+  summarise() |> 
+  tt()
+```
+
+# 3.2 Tentative de rafinement
+
+Je vais tenter de faire un groupe un peu plus fin que précédemment, il me semble qu'il y avait un peu trop de bruit.
+
+```{r}
+groupes <- cutree(Beta_flex, h = 1.46)
+
+plot(as.hclust(Beta_flex), labels = groupes)
+rect.hclust(as.hclust(Beta_flex), h = 1.46,
+            border = c(rep("black", 2), 
+                       "red", 
+                       rep("black", length(unique(groupes)) - 3))
+            )
+```
+
+Ce qui donne un groupe 5 à 10 parcelles, séparé du groupe 15 (4 parcelles).
+
+```{r}
+table(groupes)
+```
+
+## NMDS
+
+```{r}
+Commu$D_large$groupes <- groupes
+
+p_NMDS_12 <- Commu$D_large |> 
+  group_by(groupes) |> 
+  mutate(across(starts_with("NMDS"), median, .names = "med.{.col}.pam")) |> 
+  ggplot(aes(x = NMDS1, y = NMDS2)) + 
+  geom_segment(aes(xend = med.NMDS1.pam, yend = med.NMDS2.pam), alpha = 0.5) + 
+  geom_point(aes(color = drain.class.1), alpha = 0.5, size = 2) + 
+  geom_label(aes(x = med.NMDS1.pam, y = med.NMDS2.pam,
+                 label = groupes),
+             size = 3) + 
+  theme_minimal()
+
+p_NMDS_34 <- Commu$D_large |> 
+  group_by(groupes) |> 
+  mutate(across(starts_with("NMDS"), median, .names = "med.{.col}.pam")) |> 
+  ggplot(aes(x = NMDS3, y = NMDS4)) + 
+  geom_segment(aes(xend = med.NMDS3.pam, yend = med.NMDS4.pam), alpha = 0.5) + 
+  geom_point(aes(color = drain.class.1), alpha = 0.5, size = 2) + 
+  geom_label(aes(x = med.NMDS3.pam, y = med.NMDS4.pam, label = groupes),
+             size = 3) + 
+  theme_minimal()
+
+ggarrange(p_NMDS_12, p_NMDS_34, common.legend = T)
+```
+
+## Formes de croissance
+
+```{r}
+Table_forme_croissance <- table_formes_croissance(Commu, "groupes")
+
+Table_forme_croissance |> 
+  filter(groupes == 5) |> 
+  select(forme.croissance, occ.class, couvert) |> 
+  arrange(forme.croissance) |> 
+  tt() |> 
+  group_tt(
+    i = list(
+      "Plantes vasculaires" = 1,
+      "Bryophytes" = 8,
+      "Lichens" = 12
+    )
+  ) |> 
+  style_tt(i = "groupi", align = "c", line = "b")
+```
+
+## Espèces caractéristiques
+
+```{r}
+Table_sp <- table_sp(Commu, "groupes")
+
+Table_sp |> 
+  filter(groupes == "5", occ.class != "I") |> 
+  arrange(sous.regne, desc(occ.pourc)) |> 
+  select(sp.nom, occ.class, couvert) |> 
+  tt() |> 
+  setNames(c("Espèce", "Occurence", "Couvert")) |> 
+  group_tt(
+    i = list(
+      "Plantes vasculaires" = 1,
+      "Bryophytes" = 14,
+      "Lichens" = 17
+    )
+  ) |> 
+  style_tt(i = "groupi", align = "c", line = "b") |> 
+  style_tt(fontsize = 1, line = NULL)
+```
+
+Je ne vois pas de changement marquant, je dirais que je garderais le plus grand groupe, à 14 parcelles.
+
+# 4.
+
+Le prochain groupes est le groupe 9, avec 7 parcelles. Il est probablement très proche du groupe 5.
+
+```{r}
+groupes <- cutree(Beta_flex, h = 1.5)
+
+plot(as.hclust(Beta_flex), labels = groupes)
+rect.hclust(as.hclust(Beta_flex), h = 1.5,
+            border = c(rep("black", 3), 
+                       "red", 
+                       rep("black", length(unique(groupes)) - 4))
+            )
+```
+
+```{r}
+table(groupes)
+```
+
+## NMDS
+
+```{r}
+Commu$D_large$groupes <- groupes
+
+p_NMDS_12 <- Commu$D_large |> 
+  group_by(groupes) |> 
+  mutate(across(starts_with("NMDS"), median, .names = "med.{.col}.pam")) |> 
+  ggplot(aes(x = NMDS1, y = NMDS2)) + 
+  geom_segment(aes(xend = med.NMDS1.pam, yend = med.NMDS2.pam), alpha = 0.5) + 
+  geom_point(aes(color = drain.class.1), alpha = 0.5, size = 2) + 
+  geom_label(aes(x = med.NMDS1.pam, y = med.NMDS2.pam,
+                 label = groupes),
+             size = 3) + 
+  theme_minimal()
+
+p_NMDS_34 <- Commu$D_large |> 
+  group_by(groupes) |> 
+  mutate(across(starts_with("NMDS"), median, .names = "med.{.col}.pam")) |> 
+  ggplot(aes(x = NMDS3, y = NMDS4)) + 
+  geom_segment(aes(xend = med.NMDS3.pam, yend = med.NMDS4.pam), alpha = 0.5) + 
+  geom_point(aes(color = drain.class.1), alpha = 0.5, size = 2) + 
+  geom_label(aes(x = med.NMDS3.pam, y = med.NMDS4.pam, label = groupes),
+             size = 3) + 
+  theme_minimal()
+
+ggarrange(p_NMDS_12, p_NMDS_34, common.legend = T)
+```
+
+Le groupe 5 se trouve à proximativement au centre de l'axe 1, tandis que le groupe 9 se trouve dans des valeurs plus positives (caché par le groupe 42). Les deux se trouvent dans la moitié inférieure de l'axe 2. Les groupes 5 et 9 sont très proches sur les axes 3 et 4, dans les valeurs hautes de ces deux axes.
+
+## Formes de croissance
+
+```{r}
+Table_forme_croissance <- table_formes_croissance(Commu, "groupes")
+
+Table_forme_croissance |> 
+  filter(groupes == 9) |> 
+  select(forme.croissance, occ.class, couvert) |> 
+  arrange(forme.croissance) |> 
+  tt() |> 
+  group_tt(
+    i = list(
+      "Plantes vasculaires" = 1,
+      "Bryophytes" = 8,
+      "Lichens" = 12
+    )
+  ) |> 
+  style_tt(i = "groupi", align = "c", line = "b")
+```
+
+```{r}
+p_freq <- Table_forme_croissance |> 
+  filter(groupes %in% c(5, 9)) |> 
+  ggplot(aes(x = forme.croissance, y = occ.pourc, 
+             color = as.character(groupes))) + 
+  geom_point(position = position_dodge(0.5), size = 2) + 
+  geom_segment(aes(yend = 0), 
+               position = position_dodge(0.5), linewidth = 1.5) + 
+  theme_minimal() + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+
+p_abund <- Table_forme_croissance |> 
+  filter(groupes %in% c(5, 9)) |> 
+  ggplot(aes(x = forme.croissance, y = couvert.med, 
+             color = as.character(groupes))) + 
+  geom_point(position = position_dodge(0.5), size = 2) + 
+  geom_segment(aes(yend = 0), 
+               position = position_dodge(0.5), linewidth = 1.5) + 
+  theme_minimal() + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+
+ggarrange(p_freq, p_abund, common.legend = T)
+```
+
+Le couvert médian d'arbustes prostrés est beaucoup plus faible dans le groupe 9 que dans le groupe 5, mais le couvert médian de lichens fruticuleux est beaucoup plus élevé dans le groupe 9. Les graminoïdes et les bryophytes au sens strict sont aussi plus abondant en moyenne dans le groupe 9 que dans le groupe 5.
+
+Les fréquences sont similaires, à part une plus grande fréquence des graminoïdes dans le groupe 9.
+
+## Espèces caractéristiques
+
+```{r}
+Table_sp <- table_sp(Commu, "groupes")
+
+Table_sp |> 
+  filter(groupes == "9", occ.class != "I") |> 
+  arrange(sous.regne, desc(occ.pourc)) |> 
+  select(sp.nom, occ.class, couvert) |> 
+  tt() |> 
+  setNames(c("Espèce", "Occurence", "Couvert")) |> 
+  group_tt(
+    i = list(
+      "Plantes vasculaires" = 1,
+      "Bryophytes" = 14,
+      "Lichens" = 20
+    )
+  ) |> 
+  style_tt(i = "groupi", align = "c", line = "b") |> 
+  style_tt(fontsize = 1, line = NULL)
+```
+
+## Environnement
+
+```{r}
+Table_enviro <- table_enviro(Commu, "groupes")
+
+Table_enviro |> 
+  filter(groupes %in% c(5,9)) |> 
+  arrange(Variable) |> 
+  tt() |> 
+  style_tt(fontsize = 1, line = NULL)
+```
+
+Les dépôts glaciaires dominent le groupe 5, suivis par les dépôts littoraux. Les dépôts glaciaires sont moins importants dans le groupe 9, laissant de la place aux dépôts alluvionaires et aux dépôts fluvioglaciaires.
+
+Le drainage dominant des deux groupes est mésique.
+
+Les expositions dominantes sont Nord, Est et Nord-Est.
+
+Les deux groupes se trouvent sur des mors.
+
+Les situations à mi-pente et en bas de pente dominent les deux groupes, le groupe 5 étant potentiellement plus fréquemment en bas de pente que le groupe 9.
+
+## Photos
+
+```{r}
+Commu$D_large |> 
+  filter(groupes == 9) |> 
+  group_by(campagne, parcelle) |> 
+  summarise() |> 
+  tt()
+```
