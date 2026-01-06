@@ -23,6 +23,8 @@ tar_source()
 # Importer les données
 Commu <- tar_read(Commu_bflex)
 Beta_flex <- tar_read(Beta_flex)
+# Préparer une colonne pour les associations préliminaires
+Commu$D_large$assoc.prelim <- NA
 ```
 
 Observons le dendrogramme.
@@ -31,7 +33,7 @@ Observons le dendrogramme.
 plot(as.hclust(Beta_flex))
 ```
 
-# 1. Communautés cryoturbées à Salix herbacea - Gymnocolea inflata subsp. inflata/Polytrichum juniperinum
+# Sh-Gii/Pj : Communautés cryoturbées à Salix herbacea - Gymnocolea inflata subsp. inflata/Polytrichum juniperinum
 
 En partant de la gauche, nous pouvons observer un premier groupe attractif, qui se sépare à une hauteur d'environ 1.2 et ne se rassemble avec un autre groupe qu'à une hauteur d'environ 1.9. Il s'agit du groupe 1, en rouge dans la figure.
 
@@ -42,10 +44,12 @@ plot(as.hclust(Beta_flex), labels = groupes)
 rect.hclust(as.hclust(Beta_flex), h = 1.5,
             border = c("red", rep("black", length(unique(groupes)) - 1))
             )
+## Attribuer le code du groupe
+Commu$D_large$assoc.prelim[groupes == 1] <- "Sh-Gii/Pj"
 ```
 
 ```{r}
-table(groupes)
+table(Commu$D_large$assoc.prelim)
 ```
 
 Le groupe 1 rassemble 6 parcelles, tandis que le groupe 15 en rassemble 10.
@@ -53,26 +57,28 @@ Le groupe 1 rassemble 6 parcelles, tandis que le groupe 15 en rassemble 10.
 ## NMDS
 
 ```{r}
-Commu$D_large$groupes <- groupes
-
 p_NMDS_12 <- Commu$D_large |> 
-  group_by(groupes) |> 
+  filter(complete.cases(assoc.prelim)) |> 
+  group_by(assoc.prelim) |> 
   mutate(across(starts_with("NMDS"), median, .names = "med.{.col}.pam")) |> 
   ggplot(aes(x = NMDS1, y = NMDS2)) + 
   geom_segment(aes(xend = med.NMDS1.pam, yend = med.NMDS2.pam), alpha = 0.5) + 
-  geom_point(aes(color = drain.class.1), alpha = 0.5, size = 2) + 
+  geom_point(data = Commu$D_large,
+             aes(color = drain.class.1), alpha = 0.5, size = 2) + 
   geom_label(aes(x = med.NMDS1.pam, y = med.NMDS2.pam,
-                 label = groupes),
+                 label = assoc.prelim),
              size = 3) + 
   theme_minimal()
 
 p_NMDS_34 <- Commu$D_large |> 
-  group_by(groupes) |> 
+  filter(complete.cases(assoc.prelim)) |> 
+  group_by(assoc.prelim) |> 
   mutate(across(starts_with("NMDS"), median, .names = "med.{.col}.pam")) |> 
   ggplot(aes(x = NMDS3, y = NMDS4)) + 
   geom_segment(aes(xend = med.NMDS3.pam, yend = med.NMDS4.pam), alpha = 0.5) + 
-  geom_point(aes(color = drain.class.1), alpha = 0.5, size = 2) + 
-  geom_label(aes(x = med.NMDS3.pam, y = med.NMDS4.pam, label = groupes),
+  geom_point(data = Commu$D_large,
+             aes(color = drain.class.1), alpha = 0.5, size = 2) + 
+  geom_label(aes(x = med.NMDS3.pam, y = med.NMDS4.pam, label = assoc.prelim),
              size = 3) + 
   theme_minimal()
 
@@ -86,34 +92,10 @@ Le groupe 1 se trouve au centre de l'axe 1, qui représente essentiellement un g
 Nous allons observer la fréquence et l'abondance médianne des formes de croissance, et comparer ces valeurs avec celles du groupe adjacent (groupe 15).
 
 ```{r}
-Table_forme_croissance <- table_formes_croissance(Commu, "groupes")
+Table_forme_croissance <- table_formes_croissance(Commu, "assoc.prelim")
 
-p_freq <- Table_forme_croissance |> 
-  filter(groupes %in% c(1, 15)) |> 
-  ggplot(aes(x = forme.croissance, y = occ.pourc, 
-             color = as.character(groupes))) + 
-  geom_point(position = position_dodge(0.5), size = 2) + 
-  geom_segment(aes(yend = 0), 
-               position = position_dodge(0.5), linewidth = 1.5) + 
-  theme_minimal() + 
-  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
-
-p_abund <- Table_forme_croissance |> 
-  filter(groupes %in% c(1, 15)) |> 
-  ggplot(aes(x = forme.croissance, y = couvert.med, 
-             color = as.character(groupes))) + 
-  geom_point(position = position_dodge(0.5), size = 2) + 
-  geom_segment(aes(yend = 0), 
-               position = position_dodge(0.5), linewidth = 1.5) + 
-  theme_minimal() + 
-  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
-
-ggarrange(p_freq, p_abund, common.legend = T)
-```
-
-```{r}
 Table_forme_croissance |> 
-  filter(groupes == 1) |> 
+  filter(assoc.prelim == "Sh-Gii/Pj") |> 
   select(forme.croissance, occ.class, couvert) |> 
   arrange(forme.croissance) |> 
   tt() |> 
@@ -134,10 +116,10 @@ Le groupe 1 se démarque surtout par un couvert médian très élevé des hépat
 ## Espèces caractéristiques
 
 ```{r}
-Table_sp <- table_sp(Commu, "groupes")
+Table_sp <- table_sp(Commu, "assoc.prelim")
 
 Table_sp |> 
-  filter(groupes == "1", occ.class != "I") |> 
+  filter(assoc.prelim == "Sh-Gii/Pj", occ.class != "I") |> 
   arrange(sous.regne, desc(occ.pourc)) |> 
   select(sp.nom, occ.class, couvert) |> 
   tt() |> 
@@ -156,10 +138,10 @@ Table_sp |>
 Avec la liste des espèces de rang I.
 
 ```{r}
-Table_sp <- table_sp(Commu, "groupes")
+Table_sp <- table_sp(Commu, "assoc.prelim")
 
 Table_sp |> 
-  filter(groupes == "1", occ.class == "I") |> 
+  filter(assoc.prelim == "Sh-Gii/Pj", occ.class == "I") |> 
   arrange(sous.regne, desc(occ.pourc)) |> 
   select(sp.nom, occ.class, couvert) |> 
   tt() |> 
@@ -216,12 +198,12 @@ Nous allons rassembler les photos dans des dossiers dédiés. Voici le nom des p
 
 ```{r}
 Commu$D_large |> 
-  filter(groupes == 1) |> 
+  filter(assoc.prelim == "Sh-Gii/Pj") |> 
   group_by(campagne, parcelle) |> 
-  summarise()
+  summarise() |> tt()
 ```
 
-# 2. Communautés cryoturbées à Vaccinium uliginosum/Empetrum nigrum subsp. hermaphroditum - Anthelia juratzkana
+# Vu/Enh-Aj : Communautés cryoturbées à Vaccinium uliginosum/Empetrum nigrum subsp. hermaphroditum - Anthelia juratzkana
 
 En partant de la gauche, un deuxième groupe se dégage assez distinctement, qui se rassemble avec le groupe 1 à une hauteur d'environ 1.9 et ne se resépare qu'à une hauteur d'environ 1.2.
 
@@ -232,37 +214,41 @@ plot(as.hclust(Beta_flex), labels = groupes)
 rect.hclust(as.hclust(Beta_flex), h = 1.5,
             border = c("black", "red", rep("black", length(unique(groupes)) - 2))
             )
+## Attribuer le code du groupe
+Commu$D_large$assoc.prelim[groupes == 15] <- "Vu/Enh-Aj"
 ```
 
 Ce groupe (15) rassemble 10 parcelles.
 
 ```{r}
-table(groupes)
+table(Commu$D_large$assoc.prelim)
 ```
 
 ## NMDS
 
 ```{r}
-Commu$D_large$groupes <- groupes
-
 p_NMDS_12 <- Commu$D_large |> 
-  group_by(groupes) |> 
+  filter(complete.cases(assoc.prelim)) |> 
+  group_by(assoc.prelim) |> 
   mutate(across(starts_with("NMDS"), median, .names = "med.{.col}.pam")) |> 
   ggplot(aes(x = NMDS1, y = NMDS2)) + 
   geom_segment(aes(xend = med.NMDS1.pam, yend = med.NMDS2.pam), alpha = 0.5) + 
-  geom_point(aes(color = drain.class.1), alpha = 0.5, size = 2) + 
+  geom_point(data = Commu$D_large,
+             aes(color = drain.class.1), alpha = 0.5, size = 2) + 
   geom_label(aes(x = med.NMDS1.pam, y = med.NMDS2.pam,
-                 label = groupes),
+                 label = assoc.prelim),
              size = 3) + 
   theme_minimal()
 
 p_NMDS_34 <- Commu$D_large |> 
-  group_by(groupes) |> 
+  filter(complete.cases(assoc.prelim)) |> 
+  group_by(assoc.prelim) |> 
   mutate(across(starts_with("NMDS"), median, .names = "med.{.col}.pam")) |> 
   ggplot(aes(x = NMDS3, y = NMDS4)) + 
   geom_segment(aes(xend = med.NMDS3.pam, yend = med.NMDS4.pam), alpha = 0.5) + 
-  geom_point(aes(color = drain.class.1), alpha = 0.5, size = 2) + 
-  geom_label(aes(x = med.NMDS3.pam, y = med.NMDS4.pam, label = groupes),
+  geom_point(data = Commu$D_large,
+             aes(color = drain.class.1), alpha = 0.5, size = 2) + 
+  geom_label(aes(x = med.NMDS3.pam, y = med.NMDS4.pam, label = assoc.prelim),
              size = 3) + 
   theme_minimal()
 
@@ -274,10 +260,10 @@ Ce groupe se trouve proche du centre de l'axe 1, avec une valeur légèrement pl
 ## Formes de croissance
 
 ```{r}
-Table_forme_croissance <- table_formes_croissance(Commu, "groupes")
+Table_forme_croissance <- table_formes_croissance(Commu, "assoc.prelim")
 
 Table_forme_croissance |> 
-  filter(groupes == 15) |> 
+  filter(assoc.prelim == "Vu/Enh-Aj") |> 
   select(forme.croissance, occ.class, couvert) |> 
   arrange(forme.croissance) |> 
   tt() |> 
@@ -293,13 +279,38 @@ Table_forme_croissance |>
 
 Les bryophytes au sens strict, les hépatiques à feuilles et les arbustes prostrés sont presque toujours présents. Les couverts sont généralement faibles, aucun couvert maximum ne dépassant 37.5 %. Ceci démarque beaucoup ce groupe du groupe 1, dans lequel les hépatiques à feuilles avaient un couvert médiant au dessus de 60%! Les arbustes prostrés ont aussi un couvert plus important que dans le groupe 1.
 
+```{r}
+p_freq <- Table_forme_croissance |> 
+  filter(assoc.prelim %in% c("Sh-Gii/Pj", "Vu/Enh-Aj")) |> 
+  ggplot(aes(x = forme.croissance, y = occ.pourc, 
+             color = assoc.prelim)) + 
+  geom_point(position = position_dodge(0.5), size = 2) + 
+  geom_segment(aes(yend = 0), 
+               position = position_dodge(0.5), linewidth = 1.5) + 
+  theme_minimal() + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+
+p_abund <- Table_forme_croissance |> 
+  filter(assoc.prelim %in% c("Sh-Gii/Pj", "Vu/Enh-Aj")) |> 
+  ggplot(aes(x = forme.croissance, y = couvert.med, 
+             color = assoc.prelim)) + 
+  geom_point(position = position_dodge(0.5), size = 2) + 
+  geom_segment(aes(yend = 0), 
+               position = position_dodge(0.5), linewidth = 1.5) + 
+  theme_minimal() + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+
+ggarrange(p_freq, p_abund, common.legend = T)
+
+```
+
 ## Espèces caractéristiques
 
 ```{r}
-Table_sp <- table_sp(Commu, "groupes")
+Table_sp <- table_sp(Commu, "assoc.prelim")
 
 Table_sp |> 
-  filter(groupes == "15", occ.class != "I") |> 
+  filter(assoc.prelim == "Vu/Enh-Aj", occ.class != "I") |> 
   arrange(sous.regne, desc(occ.pourc)) |> 
   select(sp.nom, occ.class, couvert) |> 
   tt() |> 
@@ -327,8 +338,8 @@ Plusieurs choses sautent immédiatement au yeux :
 
 ```{r}
 Commu$D_large |> 
-  filter(groupes %in% c(1,15)) |> 
-  group_by(groupes) |> 
+  filter(assoc.prelim %in% c("Sh-Gii/Pj", "Vu/Enh-Aj")) |> 
+  group_by(assoc.prelim) |> 
   summarise(across(c(pente, alti.mnemr), .fns = 
                      ~paste0(
                        round(median(.x)),
@@ -342,10 +353,10 @@ Commu$D_large |>
 Le groupe se trouve à une diversité d'altitudes et sur des pentes plates à modérées.
 
 ```{r}
-Table_enviro <- table_enviro(Commu, "groupes")
+Table_enviro <- table_enviro(Commu, "assoc.prelim")
 
 Table_enviro |> 
-  filter(groupes %in% c(1,15)) |> 
+  filter(assoc.prelim %in% c("Sh-Gii/Pj", "Vu/Enh-Aj")) |> 
   arrange(Variable) |> 
   tt() |> 
   style_tt(fontsize = 1, line = NULL)
@@ -363,7 +374,7 @@ Ce groupe rassemble des parcelles de la baie d'Hudson et de la Rivière Arnaud. 
 
 ```{r}
 Commu$D_large |> 
-  filter(groupes == 15) |> 
+  filter(assoc.prelim %in% c("Vu/Enh-Aj")) |> 
   group_by(campagne, parcelle) |> 
   summarise() |> 
   tt()
@@ -382,37 +393,41 @@ rect.hclust(as.hclust(Beta_flex), h = 1.5,
                        "red", 
                        rep("black", length(unique(groupes)) - 3))
             )
+## Attribuer le code du groupe
+Commu$D_large$assoc.prelim[groupes == 5] <- "Sh"
 ```
 
 Le groupe 5 formé en coupant à une hauteur de 1.5 rassemble 14 parcelles. Si on coupait à une hauteur de 1.7, rassemblant les groupes 5 et 9, cela donnerait un groupe rassemblant 21 parcelles. Restons à 14 pour le moment.
 
 ```{r}
-table(groupes)
+table(Commu$D_large$assoc.prelim)
 ```
 
 ## NMDS
 
 ```{r}
-Commu$D_large$groupes <- groupes
-
 p_NMDS_12 <- Commu$D_large |> 
-  group_by(groupes) |> 
+  filter(complete.cases(assoc.prelim)) |> 
+  group_by(assoc.prelim) |> 
   mutate(across(starts_with("NMDS"), median, .names = "med.{.col}.pam")) |> 
   ggplot(aes(x = NMDS1, y = NMDS2)) + 
   geom_segment(aes(xend = med.NMDS1.pam, yend = med.NMDS2.pam), alpha = 0.5) + 
-  geom_point(aes(color = drain.class.1), alpha = 0.5, size = 2) + 
+  geom_point(data = Commu$D_large,
+             aes(color = drain.class.1), alpha = 0.5, size = 2) + 
   geom_label(aes(x = med.NMDS1.pam, y = med.NMDS2.pam,
-                 label = groupes),
+                 label = assoc.prelim),
              size = 3) + 
   theme_minimal()
 
 p_NMDS_34 <- Commu$D_large |> 
-  group_by(groupes) |> 
+  filter(complete.cases(assoc.prelim)) |> 
+  group_by(assoc.prelim) |> 
   mutate(across(starts_with("NMDS"), median, .names = "med.{.col}.pam")) |> 
   ggplot(aes(x = NMDS3, y = NMDS4)) + 
   geom_segment(aes(xend = med.NMDS3.pam, yend = med.NMDS4.pam), alpha = 0.5) + 
-  geom_point(aes(color = drain.class.1), alpha = 0.5, size = 2) + 
-  geom_label(aes(x = med.NMDS3.pam, y = med.NMDS4.pam, label = groupes),
+  geom_point(data = Commu$D_large,
+             aes(color = drain.class.1), alpha = 0.5, size = 2) + 
+  geom_label(aes(x = med.NMDS3.pam, y = med.NMDS4.pam, label = assoc.prelim),
              size = 3) + 
   theme_minimal()
 
@@ -770,6 +785,168 @@ Les situations à mi-pente et en bas de pente dominent les deux groupes, le grou
 ```{r}
 Commu$D_large |> 
   filter(groupes == 9) |> 
+  group_by(campagne, parcelle) |> 
+  summarise() |> 
+  tt()
+```
+
+# 5.
+
+```{r}
+groupes <- cutree(Beta_flex, h = 1.6)
+
+plot(as.hclust(Beta_flex), labels = groupes)
+rect.hclust(as.hclust(Beta_flex), h = 1.6,
+            border = c(rep("black", 3), 
+                       "red", 
+                       rep("black", length(unique(groupes)) - 4))
+            )
+## Attribuer le code du groupe
+Commu$D_large$assoc.prelim[groupes == 16] <- 5
+```
+
+```{r}
+table(Commu$D_large$assoc.prelim)
+```
+
+## NMDS
+
+```{r}
+p_NMDS_12 <- Commu$D_large |> 
+  filter(complete.cases(assoc.prelim)) |> 
+  group_by(assoc.prelim) |> 
+  mutate(across(starts_with("NMDS"), median, .names = "med.{.col}.pam")) |> 
+  ggplot(aes(x = NMDS1, y = NMDS2)) + 
+  geom_segment(aes(xend = med.NMDS1.pam, yend = med.NMDS2.pam), alpha = 0.5) + 
+  geom_point(data = Commu$D_large,
+             aes(color = drain.class.1), alpha = 0.5, size = 2) + 
+  geom_label(aes(x = med.NMDS1.pam, y = med.NMDS2.pam,
+                 label = assoc.prelim),
+             size = 3) + 
+  theme_minimal()
+
+p_NMDS_34 <- Commu$D_large |> 
+  filter(complete.cases(assoc.prelim)) |> 
+  group_by(assoc.prelim) |> 
+  mutate(across(starts_with("NMDS"), median, .names = "med.{.col}.pam")) |> 
+  ggplot(aes(x = NMDS3, y = NMDS4)) + 
+  geom_segment(aes(xend = med.NMDS3.pam, yend = med.NMDS4.pam), alpha = 0.5) + 
+  geom_point(data = Commu$D_large,
+             aes(color = drain.class.1), alpha = 0.5, size = 2) + 
+  geom_label(aes(x = med.NMDS3.pam, y = med.NMDS4.pam, label = assoc.prelim),
+             size = 3) + 
+  theme_minimal()
+
+ggarrange(p_NMDS_12, p_NMDS_34, common.legend = T)
+```
+
+## Espèces caractéristiques
+
+```{r}
+Table_sp <- table_sp(Commu, "assoc.prelim")
+
+Table_sp |> 
+  filter(assoc.prelim == "5", occ.class != "I") |> 
+  arrange(sous.regne, desc(occ.pourc)) |> 
+  select(sp.nom, occ.class, couvert) |> 
+  tt() |> 
+  setNames(c("Espèce", "Occurence", "Couvert")) |> 
+  group_tt(
+    i = list(
+      "Plantes vasculaires" = 1,
+      "Bryophytes" = 14,
+      "Lichens" = 20
+    )
+  ) |> 
+  style_tt(i = "groupi", align = "c", line = "b") |> 
+  style_tt(fontsize = 1, line = NULL)
+```
+
+-   Rhododendron lapponicum (arctique-alpin) : Calciphile et saxicole, le Rhododendron lapponicum occupe sporadiquement les ankers et les rendzines des affleurements granitiques et calcaires... La plante pousse en toundra sèche, exposée et peu enneigée...
+
+## Photos
+
+```{r}
+Commu$D_large |> 
+  filter(assoc.prelim == 5) |> 
+  group_by(campagne, parcelle) |> 
+  summarise() |> 
+  tt()
+```
+
+# 6.
+
+```{r}
+groupes <- cutree(Beta_flex, h = 1.7)
+
+plot(as.hclust(Beta_flex), labels = groupes)
+rect.hclust(as.hclust(Beta_flex), h = 1.7,
+            border = c(rep("black", 4), 
+                       "red", 
+                       rep("black", length(unique(groupes)) - 5))
+            )
+## Attribuer le code du groupe
+Commu$D_large$assoc.prelim[groupes == 14] <- 6
+```
+
+## NMDS
+
+```{r}
+p_NMDS_12 <- Commu$D_large |> 
+  filter(complete.cases(assoc.prelim)) |> 
+  group_by(assoc.prelim) |> 
+  mutate(across(starts_with("NMDS"), median, .names = "med.{.col}.pam")) |> 
+  ggplot(aes(x = NMDS1, y = NMDS2)) + 
+  geom_segment(aes(xend = med.NMDS1.pam, yend = med.NMDS2.pam), alpha = 0.5) + 
+  geom_point(data = Commu$D_large,
+             aes(color = drain.class.1), alpha = 0.5, size = 2) + 
+  geom_label(aes(x = med.NMDS1.pam, y = med.NMDS2.pam,
+                 label = assoc.prelim),
+             size = 3) + 
+  theme_minimal()
+
+p_NMDS_34 <- Commu$D_large |> 
+  filter(complete.cases(assoc.prelim)) |> 
+  group_by(assoc.prelim) |> 
+  mutate(across(starts_with("NMDS"), median, .names = "med.{.col}.pam")) |> 
+  ggplot(aes(x = NMDS3, y = NMDS4)) + 
+  geom_segment(aes(xend = med.NMDS3.pam, yend = med.NMDS4.pam), alpha = 0.5) + 
+  geom_point(data = Commu$D_large,
+             aes(color = drain.class.1), alpha = 0.5, size = 2) + 
+  geom_label(aes(x = med.NMDS3.pam, y = med.NMDS4.pam, label = assoc.prelim),
+             size = 3) + 
+  theme_minimal()
+
+ggarrange(p_NMDS_12, p_NMDS_34, common.legend = T)
+```
+
+## Espèces caractéristiques
+
+```{r}
+Table_sp <- table_sp(Commu, "assoc.prelim")
+
+Table_sp |> 
+  filter(assoc.prelim == "6", occ.class != "I") |> 
+  arrange(sous.regne, desc(occ.pourc)) |> 
+  select(sp.nom, occ.class, couvert) |> 
+  tt() |> 
+  setNames(c("Espèce", "Occurence", "Couvert")) |> 
+  group_tt(
+    i = list(
+      "Plantes vasculaires" = 1,
+      "Bryophytes" = 14,
+      "Lichens" = 20
+    )
+  ) |> 
+  style_tt(i = "groupi", align = "c", line = "b") |> 
+  style_tt(fontsize = 1, line = NULL)
+```
+
+## Photos
+
+```{r}
+Commu$D_large |> 
+  filter(assoc.prelim == 6) |> 
   group_by(campagne, parcelle) |> 
   summarise() |> 
   tt()
